@@ -1,0 +1,6 @@
+{
+  "name": "AI VIDEO STUDIO",
+  "description": "Платформа управления ИИ-видеопроизводством: дашборд проектов, визуальный конструктор сценариев, слоты агентов, медиатека и видеостудия с таймлайном.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
