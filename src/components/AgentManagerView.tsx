@@ -10,7 +10,45 @@ export const AgentManagerView: React.FC = () => {
   const [role, setRole] = useState('');
   const [targetModelCategory, setTargetModelCategory] = useState('Текст и сценарии');
   const [notes, setNotes] = useState('');
+  const [idea, setIdea] = useState('');
+  const [generatedStory, setGeneratedStory] = useState('');
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [generationError, setGenerationError] = useState('');
 
+  const handleGenerateStory = async () => {
+    if (!idea.trim()) {
+      setGenerationError('Сначала напишите идею истории.');
+      return;
+    }
+
+    setIsGenerating(true);
+    setGenerationError('');
+    setGeneratedStory('');
+
+    try {
+      const response = await fetch('/api/generate-script', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ idea: idea.trim() }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Ошибка генерации');
+      }
+
+      setGeneratedStory(data.story);
+    } catch (error) {
+      setGenerationError(
+        error instanceof Error ? error.message : 'Не удалось создать сценарий.'
+      );
+    } finally {
+      setIsGenerating(false);
+    }
+  };
   const reservedCount = workspace.agentSlots.filter((s) => s.status === 'reserved').length;
 
   const openSlotEditor = (slot: AgentSlot) => {
