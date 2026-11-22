@@ -108,9 +108,10 @@ const response = await fetch(
       story: result
     });
 
-  } catch (error) {
+   } catch (error) {
     return res.status(500).json({
-      error: "Server error while generating story"
+      error: "Server error while generating story",
+      details: error.message
     });
   }
 }
