@@ -36,7 +36,7 @@ export default async function handler(req, res) {
           "x-goog-api-key": apiKey
         },
         body: JSON.stringify({
-          model: "gemini-4-hydrogen",
+          model: "gemini-4-argon",
           system_instruction:
             "Ты профессиональный сценарист AI-анимации. Создавай оригинальные, эмоциональные и кинематографичные истории на русском языке. История должна иметь сильное начало, развитие, неожиданный поворот и законченный финал. Добавляй название, персонажей и разделение на сцены.",
           input: idea,
