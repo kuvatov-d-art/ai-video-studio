@@ -56,21 +56,46 @@ export default async function handler(req, res) {
       });
     }
 
-    const texts = [];
+       function collectText(value, result = []) {
+      if (!value) return result;
 
-    for (const step of data.steps || []) {
-      for (const item of step.content || []) {
-        if (item.type === "text" && item.text) {
-          texts.push(item.text);
+      if (Array.isArray(value)) {
+        for (const item of value) {
+          collectText(item, result);
+        }
+        return result;
+      }
+
+      if (typeof value === "object") {
+        if (value.type === "text" && typeof value.text === "string") {
+          result.push(value.text);
+        }
+
+        for (const [key, item] of Object.entries(value)) {
+          if (
+            (key === "output_text" || key === "outputText") &&
+            typeof item === "string"
+          ) {
+            result.push(item);
+          } else if (typeof item === "object" && item !== null) {
+            collectText(item, result);
+          }
         }
       }
+
+      return result;
     }
 
-    const result = data.output_text || texts.join("\n").trim();
+    const result = [...new Set(collectText(data))]
+      .join("\n")
+      .trim();
 
     if (!result) {
       return res.status(502).json({
-        error: "Gemini returned an empty response"
+        error: "Gemini не вернул текст. Статус: " +
+          (data.status || "неизвестен") +
+          ". Типы шагов: " +
+          (data.steps || []).map(step => step.type).join(", ")
       });
     }
 
