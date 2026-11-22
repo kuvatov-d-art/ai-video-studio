@@ -78,6 +78,47 @@ export const AgentManagerView: React.FC = () => {
 
   return (
     <div className="mx-auto max-w-[1400px] space-y-6">
+            {/* AI Scriptwriter */}
+      <div className="rounded-xl border border-[#7C3AED]/40 bg-[#0B1120] p-5 space-y-4">
+        <div>
+          <h2 className="text-lg font-semibold text-white">
+            AI Scriptwriter — Gemini
+          </h2>
+          <p className="mt-1 text-xs text-slate-400">
+            Первый рабочий ИИ-агент нашей платформы.
+          </p>
+        </div>
+
+        <textarea
+          value={idea}
+          onChange={(e) => setIdea(e.target.value)}
+          placeholder="Опиши идею своей истории..."
+          rows={4}
+          className="w-full rounded-lg border border-[#1E293B] bg-[#060913] px-3 py-3 text-sm text-white placeholder-slate-500 focus:border-[#8B5CF6] focus:outline-none"
+        />
+
+        <button
+          type="button"
+          onClick={handleGenerateStory}
+          disabled={isGenerating}
+          className="rounded-lg bg-[#7C3AED] px-5 py-2.5 text-sm font-semibold text-white hover:bg-[#6D28D9] disabled:opacity-50"
+        >
+          {isGenerating ? 'Gemini создаёт сценарий...' : 'Создать сценарий'}
+        </button>
+
+        {generationError && (
+          <p className="text-sm text-rose-400">{generationError}</p>
+        )}
+
+        {generatedStory && (
+          <div className="rounded-lg border border-[#1E293B] bg-[#060913] p-4">
+            <h3 className="mb-3 font-semibold text-white">Готовый сценарий</h3>
+            <div className="whitespace-pre-wrap text-sm leading-7 text-slate-300">
+              {generatedStory}
+            </div>
+          </div>
+        )}
+      </div>
       <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-[#1E293B] bg-[#0B1120] p-5">
         <div>
           <h2 className="text-base font-semibold text-white">
