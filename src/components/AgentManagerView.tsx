@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { useStudioStore } from '../store/useStudioStore';
 import { AgentSlot } from '../types/studio';
+import AIOrchestratorPanel from './AIOrchestratorPanel';
 
 const OLLAMA_URL = 'http://localhost:11434/api/chat';
 const QWEN_MODEL = 'qwen3:8b';
