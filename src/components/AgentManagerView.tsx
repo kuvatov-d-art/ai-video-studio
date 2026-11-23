@@ -33,7 +33,7 @@ export const AgentManagerView: React.FC = () => {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          model: 'qwen3:4b',
+          model: 'qwen2.5:7b',
           prompt: `/no_think
 Ты профессиональный сценарист AI-анимации.
 Создай оригинальную, эмоциональную и кинематографичную историю на русском языке.
