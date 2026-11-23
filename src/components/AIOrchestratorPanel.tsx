@@ -1,5 +1,5 @@
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Bot,
   CheckCircle2,
@@ -60,7 +60,7 @@ const AGENTS: AgentDefinition[] = [
 РЕКОМЕНДАЦИИ:
 
 Не переписывай сценарий.`,
-    maxTokens: 850,
+    maxTokens: 1200,
   },
   {
     id: 'characters',
@@ -84,7 +84,7 @@ const AGENTS: AgentDefinition[] = [
 НЕОБХОДИМЫЕ ИСПРАВЛЕНИЯ:
 
 Если ошибок нет, прямо укажи это. Не переписывай сценарий.`,
-    maxTokens: 850,
+    maxTokens: 1200,
   },
   {
     id: 'plot',
@@ -103,15 +103,17 @@ const AGENTS: AgentDefinition[] = [
 5. Не выглядит ли финал случайным или искусственным.
 6. Есть ли эмоциональный эффект в развязке.
 
-Верни:
+Верни краткий, конкретный отчёт:
 ИНТРИГА:
 НАПРЯЖЕНИЕ:
 СЮЖЕТНЫЙ ПОВОРОТ:
 СЛАБЫЕ МЕСТА:
 КОНКРЕТНЫЕ РЕКОМЕНДАЦИИ:
 
-Не переписывай сценарий.`,
-    maxTokens: 900,
+Не переписывай сценарий.
+Не повторяй исходный текст.
+Не делай длинных вступлений.`,
+    maxTokens: 1600,
   },
   {
     id: 'screenwriter',
@@ -141,8 +143,10 @@ const AGENTS: AgentDefinition[] = [
 
 Если сцена не требует изменений, напиши: Без замечаний.
 
-Не создавай новый сценарий. Не переписывай все сцены.`,
-    maxTokens: 1100,
+Не создавай новый сценарий.
+Не переписывай все сцены.
+Пиши конкретно и кратко.`,
+    maxTokens: 1800,
   },
   {
     id: 'editor',
@@ -169,8 +173,11 @@ const AGENTS: AgentDefinition[] = [
 
 ВЫВЕДИ:
 Только полный исправленный сценарий, начиная с названия и заканчивая финалом.
-Не добавляй вступление или заключение.`,
-    maxTokens: 2400,
+
+Не добавляй вступление или заключение.
+Не пропускай сцены.
+Не обрывай финал.`,
+    maxTokens: 3500,
   },
   {
     id: 'quality',
@@ -206,8 +213,9 @@ const AGENTS: AgentDefinition[] = [
 ВАЖНО:
 Не переписывай сценарий.
 Не выдумывай ошибки.
-Если критических проблем нет, укажи: Критических ошибок не обнаружено.`,
-    maxTokens: 1000,
+Если критических проблем нет, укажи:
+Критических ошибок не обнаружено.`,
+    maxTokens: 1500,
   },
 ];
 
@@ -215,7 +223,11 @@ const createInitialStates = (): Record<string, AgentState> =>
   Object.fromEntries(
     AGENTS.map((agent) => [
       agent.id,
-      { status: 'waiting', result: '', error: '' },
+      {
+        status: 'waiting',
+        result: '',
+        error: '',
+      },
     ])
   );
 
@@ -244,6 +256,7 @@ async function askQwen(
           temperature: 0.25,
           top_p: 0.9,
           repeat_penalty: 1.08,
+          num_ctx: 8192,
           num_predict: maxTokens,
         },
       }),
@@ -254,13 +267,22 @@ async function askQwen(
     );
   }
 
-  const data = await response.json();
+  let data: any;
+
+  try {
+    data = await response.json();
+  } catch {
+    throw new Error('Ollama вернула некорректный ответ.');
+  }
 
   if (!response.ok) {
     throw new Error(data.error || 'Ошибка Ollama.');
   }
 
-  if (data.done_reason === 'length') {
+  if (
+    data.done_reason === 'length' ||
+    data.done_reason === 'max_tokens'
+  ) {
     throw new Error(
       `Qwen достигла лимита ${maxTokens} токенов и оборвала ответ.`
     );
@@ -291,14 +313,28 @@ export const AIOrchestratorPanel: React.FC<Props> = ({
   const [states, setStates] = useState<Record<string, AgentState>>(
     createInitialStates
   );
+
   const [isRunning, setIsRunning] = useState(false);
   const [finalDraft, setFinalDraft] = useState('');
   const [pipelineError, setPipelineError] = useState('');
 
-  const updateAgent = (id: string, patch: Partial<AgentState>) => {
+  // Сбрасываем результаты, если исходный сценарий изменился.
+  useEffect(() => {
+    setStates(createInitialStates());
+    setFinalDraft('');
+    setPipelineError('');
+  }, [initialStory]);
+
+  const updateAgent = (
+    id: string,
+    patch: Partial<AgentState>
+  ) => {
     setStates((previous) => ({
       ...previous,
-      [id]: { ...previous[id], ...patch },
+      [id]: {
+        ...previous[id],
+        ...patch,
+      },
     }));
   };
 
@@ -306,7 +342,7 @@ export const AIOrchestratorPanel: React.FC<Props> = ({
     agent: AgentDefinition,
     sourceScript: string,
     previousResults: Record<string, string>
-  ) => {
+  ): Promise<string> => {
     updateAgent(agent.id, {
       status: 'running',
       error: '',
@@ -332,6 +368,7 @@ ${reports.slice(0, 5000) || 'Предыдущих отчётов пока нет
 ${agent.task}
 
 Работай только с предоставленным материалом.
+Соблюдай заданный формат ответа.
 `;
 
     try {
@@ -350,7 +387,9 @@ ${agent.task}
       return result;
     } catch (error) {
       const message =
-        error instanceof Error ? error.message : 'Неизвестная ошибка.';
+        error instanceof Error
+          ? error.message
+          : 'Неизвестная ошибка.';
 
       updateAgent(agent.id, {
         status: 'error',
@@ -361,7 +400,11 @@ ${agent.task}
     }
   };
 
+  // Запускает только незавершённых агентов.
+  // Завершённые результаты сохраняются.
   const runPipeline = async () => {
+    if (isRunning) return;
+
     if (!initialStory.trim()) {
       setPipelineError(
         'Сначала создай сценарий в AI Scriptwriter.'
@@ -371,24 +414,39 @@ ${agent.task}
 
     setIsRunning(true);
     setPipelineError('');
-    setFinalDraft('');
-    setStates(createInitialStates());
 
     const results: Record<string, string> = {};
-    let currentScript = initialStory.trim();
+
+    AGENTS.forEach((agent) => {
+      const savedResult = states[agent.id]?.result;
+
+      if (savedResult && states[agent.id]?.status === 'done') {
+        results[agent.id] = savedResult;
+      }
+    });
+
+    if (results.editor) {
+      setFinalDraft(results.editor);
+    }
 
     try {
       for (const agent of AGENTS) {
+        // Не запускаем уже завершённого агента повторно.
+        if (states[agent.id]?.status === 'done' && results[agent.id]) {
+          continue;
+        }
+
+        const sourceScript = initialStory.trim();
+
         const result = await runOneAgent(
           agent,
-          currentScript,
+          sourceScript,
           results
         );
 
         results[agent.id] = result;
 
         if (agent.id === 'editor') {
-          currentScript = result;
           setFinalDraft(result);
         }
       }
@@ -396,42 +454,68 @@ ${agent.task}
       setPipelineError(
         error instanceof Error
           ? error.message
-          : 'Работа цепочки агентов остановлена.'
+          : 'Работа цепочки агентов остановлена. Можно продолжить после исправления ошибки.'
       );
     } finally {
       setIsRunning(false);
     }
   };
 
+  // Повторный запуск выбранного агента.
+  // Все последующие агенты сбрасываются, чтобы не использовать старые результаты.
   const retryAgent = async (agent: AgentDefinition) => {
     if (isRunning || !initialStory.trim()) return;
 
     setIsRunning(true);
     setPipelineError('');
 
+    const agentIndex = AGENTS.findIndex(
+      (item) => item.id === agent.id
+    );
+
     const results: Record<string, string> = {};
 
     AGENTS.forEach((item) => {
-      if (states[item.id].result) {
-        results[item.id] = states[item.id].result;
+      const savedResult = states[item.id]?.result;
+
+      if (
+        savedResult &&
+        states[item.id]?.status === 'done' &&
+        AGENTS.findIndex((entry) => entry.id === item.id) < agentIndex
+      ) {
+        results[item.id] = savedResult;
       }
     });
 
-    const sourceScript =
-      agent.id === 'quality' && finalDraft
-        ? finalDraft
-        : initialStory;
+    // Сбрасываем результаты выбранного и всех следующих агентов.
+    setStates((previous) => {
+      const next = { ...previous };
+
+      AGENTS.forEach((item, index) => {
+        if (index >= agentIndex) {
+          next[item.id] = {
+            status: 'waiting',
+            result: '',
+            error: '',
+          };
+        }
+      });
+
+      return next;
+    });
+
+    if (agentIndex <= AGENTS.findIndex((item) => item.id === 'editor')) {
+      setFinalDraft('');
+    }
 
     try {
-      const result = await runOneAgent(
+      const sourceScript = initialStory.trim();
+
+      await runOneAgent(
         agent,
         sourceScript,
         results
       );
-
-      if (agent.id === 'editor') {
-        setFinalDraft(result);
-      }
     } catch (error) {
       setPipelineError(
         error instanceof Error
@@ -447,6 +531,10 @@ ${agent.task}
     (agent) => states[agent.id].status === 'done'
   ).length;
 
+  const hasPreviousResults = completedCount > 0;
+
+  const allCompleted = completedCount === AGENTS.length;
+
   return (
     <section className="rounded-xl border border-[#7C3AED]/40 bg-[#0B1120] p-5 space-y-5">
       <div>
@@ -460,6 +548,7 @@ ${agent.task}
         <p className="mt-2 text-xs leading-5 text-slate-400">
           Шесть специализированных ролей работают последовательно
           на одной локальной модели Qwen 3 8B.
+          Завершённые результаты сохраняются при продолжении цепочки.
         </p>
       </div>
 
@@ -471,7 +560,7 @@ ${agent.task}
         <button
           type="button"
           onClick={runPipeline}
-          disabled={isRunning || !initialStory.trim()}
+          disabled={isRunning || !initialStory.trim() || allCompleted}
           className="inline-flex items-center gap-2 rounded-lg bg-violet-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-violet-600 disabled:cursor-not-allowed disabled:opacity-40"
         >
           {isRunning ? (
@@ -479,7 +568,14 @@ ${agent.task}
           ) : (
             <Play className="h-4 w-4" />
           )}
-          {isRunning ? 'Агенты работают...' : 'Запустить всех агентов'}
+
+          {isRunning
+            ? 'Агенты работают...'
+            : allCompleted
+              ? 'Все агенты завершили работу'
+              : hasPreviousResults
+                ? 'Продолжить цепочку'
+                : 'Запустить всех агентов'}
         </button>
       </div>
 
@@ -514,6 +610,7 @@ ${agent.task}
                     <p className="text-sm font-semibold text-white">
                       {String(index + 1).padStart(2, '0')} · {agent.name}
                     </p>
+
                     <p className="text-xs text-slate-500">
                       {agent.role}
                     </p>
@@ -539,7 +636,7 @@ ${agent.task}
                     type="button"
                     onClick={() => retryAgent(agent)}
                     disabled={isRunning || !initialStory.trim()}
-                    title="Повторить запуск агента"
+                    title="Повторить запуск агента и сбросить последующих"
                     className="rounded-md border border-[#334155] p-1.5 text-slate-400 hover:text-white disabled:opacity-30"
                   >
                     <RotateCcw className="h-3.5 w-3.5" />
@@ -558,6 +655,7 @@ ${agent.task}
                   <summary className="cursor-pointer text-xs font-medium text-violet-300">
                     Посмотреть результат агента
                   </summary>
+
                   <div className="mt-3 whitespace-pre-wrap text-sm leading-6 text-slate-300">
                     {state.result}
                   </div>
@@ -570,7 +668,10 @@ ${agent.task}
 
       {pipelineError && (
         <div className="rounded-lg border border-rose-900/50 bg-rose-950/20 p-3 text-sm text-rose-300">
-          {pipelineError}
+          <div className="flex items-start gap-2">
+            <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+            <span>{pipelineError}</span>
+          </div>
         </div>
       )}
 
@@ -578,14 +679,16 @@ ${agent.task}
         <div className="space-y-3 rounded-lg border border-emerald-900/50 bg-[#060913] p-4">
           <div className="flex items-center gap-2">
             <CheckCircle2 className="h-5 w-5 text-emerald-400" />
+
             <h3 className="font-semibold text-white">
               Результат Editor Agent
             </h3>
           </div>
 
           <p className="text-xs leading-5 text-slate-400">
-            Это отредактированный сценарий. Quality Agent проверяет
-            его отдельно. Применяй результат после проверки.
+            Это отредактированный сценарий.
+            Quality Agent проверяет его отдельно.
+            Применяй результат после проверки.
           </p>
 
           <div className="max-h-[500px] overflow-y-auto whitespace-pre-wrap text-sm leading-7 text-slate-300">
