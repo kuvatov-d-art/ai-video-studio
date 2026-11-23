@@ -535,7 +535,7 @@ ${SCENE_PURPOSES[sceneNumber - 1]}
 `,
             },
           ],
-          1500,
+          2000,
           0.45
         );
 
