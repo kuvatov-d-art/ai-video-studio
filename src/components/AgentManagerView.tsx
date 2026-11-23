@@ -13,7 +13,7 @@ import { useStudioStore } from '../store/useStudioStore';
 import { AgentSlot } from '../types/studio';
 
 const OLLAMA_URL = 'http://localhost:11434/api/chat';
-const QWEN_MODEL = 'qwen3.5:4b';
+const QWEN_MODEL = 'qwen3:8b';
 
 const SCENE_COUNT = 5;
 const TARGET_MIN_WORDS = 280;
@@ -130,7 +130,7 @@ async function askQwen(
     });
   } catch {
     throw new Error(
-      'Не удалось подключиться к Ollama. Проверь, что ollama serve запущена и разрешён доступ с сайта.'
+      'Не удалось подключиться к Ollama. Проверь, что Ollama запущена и доступна по адресу http://localhost:11434.'
     );
   }
 
@@ -146,16 +146,16 @@ async function askQwen(
     throw new Error(data.error || 'Ошибка при обращении к Ollama.');
   }
 
+  if (data.done_reason === 'length') {
+    throw new Error(
+      `Qwen остановила ответ на лимите ${numPredict} токенов. Уменьши объём запроса или увеличь лимит.`
+    );
+  }
+
   const result = (data.message?.content || '')
     .replace(/<think>[\s\S]*?<\/think>/gi, '')
     .replace(/\\([*_#])/g, '$1')
     .trim();
-
-  if (data.done_reason === 'length') {
-    throw new Error(
-      `Qwen остановила ответ на лимите ${numPredict} токенов. Ответ не был принят, чтобы не сохранить оборванную сцену. Попробуй ещё раз.`
-    );
-  }
 
   if (!result) {
     throw new Error('Qwen не вернула текст.');
@@ -291,7 +291,6 @@ function extractSceneBlocks(script: string): string[] {
   });
 }
 
-// Уменьшает передаваемый контекст, сохраняя нужные факты.
 function compactText(text: string, maxLength: number): string {
   const cleaned = text.trim();
 
@@ -317,7 +316,10 @@ function getSceneBrief(outline: string, sceneNumber: number): string {
 
   const match = plan.match(scenePattern);
 
-  return match?.[0] || `Сцена ${sceneNumber}: продолжение истории по общей сюжетной основе.`;
+  return (
+    match?.[0] ||
+    `Сцена ${sceneNumber}: продолжение истории по общей сюжетной основе.`
+  );
 }
 
 export const AgentManagerView: React.FC = () => {
@@ -369,7 +371,6 @@ export const AgentManagerView: React.FC = () => {
     setDirectorStage('');
 
     try {
-      // ЭТАП 1. Компактная сюжетная основа.
       const outline = await askQwen(
         [
           {
@@ -436,14 +437,7 @@ ${compactText(idea.trim(), 1200)}
       const seriesInfo = compactText(outline, 3500);
       const scenes: string[] = [];
 
-      setGeneratedStory(seriesInfo);
-
-      // ЭТАП 2. Генерируем сцены по одной.
-      for (
-        let sceneNumber = 1;
-        sceneNumber <= SCENE_COUNT;
-        sceneNumber++
-      ) {
+      for (let sceneNumber = 1; sceneNumber <= SCENE_COUNT; sceneNumber++) {
         setGenerationStage(
           `Создаю сцену ${sceneNumber} из ${SCENE_COUNT}...`
         );
@@ -482,8 +476,7 @@ ${previousScene}
 ${SCENE_PURPOSES[sceneNumber - 1]}
 
 ОБЪЁМ:
-45–70 произносимых слов.
-Не растягивай сцену.
+55–70 произносимых слов.
 Пиши коротко, но драматично.
 
 ПРАВИЛА:
@@ -516,27 +509,16 @@ ${sceneNumber === 5 ? `
           0.4
         );
 
-        const normalizedScene = normalizeSceneHeading(
-          currentScene,
-          sceneNumber
+        scenes.push(normalizeSceneHeading(currentScene, sceneNumber));
+
+        setGeneratedStory(
+          [seriesInfo, ...scenes].filter(Boolean).join('\n\n')
         );
-
-        scenes.push(normalizedScene);
-
-        const currentStory = [seriesInfo, ...scenes]
-          .filter(Boolean)
-          .join('\n\n');
-
-        setGeneratedStory(currentStory);
       }
 
-      // ЭТАП 3. Техническая проверка.
       setGenerationStage('Проверяю структуру и хронометраж...');
 
-      const finalStory = [seriesInfo, ...scenes]
-        .filter(Boolean)
-        .join('\n\n');
-
+      const finalStory = scenes.join('\n\n');
       const sceneTotal = countScenes(finalStory);
 
       const sceneWordCounts = scenes.map((scene) =>
@@ -548,9 +530,7 @@ ${sceneNumber === 5 ? `
         0
       );
 
-      const estimatedSeconds =
-        Math.round((spokenWords / 140) * 60) + 8;
-
+      const estimatedSeconds = Math.round((spokenWords / 140) * 60) + 8;
       const warnings: string[] = [];
 
       if (sceneTotal !== SCENE_COUNT) {
@@ -586,9 +566,7 @@ ${sceneNumber === 5 ? `
       const repeatedLines = countRepeatedLines(finalStory);
 
       if (repeatedLines > 0) {
-        warnings.push(
-          `Найдены повторяющиеся строки: ${repeatedLines}.`
-        );
+        warnings.push(`Найдены повторяющиеся строки: ${repeatedLines}.`);
       }
 
       if (estimatedSeconds < 120 || estimatedSeconds > 180) {
@@ -615,10 +593,7 @@ ${sceneNumber === 5 ? `
 
       setGeneratedStory(finalStory);
 
-      // ЭТАП 4. Проверка логики.
-      setGenerationStage(
-        'Проверяю логику, персонажей и развязку...'
-      );
+      setGenerationStage('Проверяю логику, персонажей и развязку...');
 
       try {
         const audit = await askQwen(
@@ -714,7 +689,6 @@ ${compactText(finalStory, 4500)}
     }
   };
 
-  // AI Director: отдельный короткий запрос для каждой сцены.
   const handleCreateDirectorPlan = async () => {
     if (!generatedStory.trim()) {
       setDirectorError('Сначала создай сценарий в AI Scriptwriter.');
@@ -737,11 +711,7 @@ ${compactText(finalStory, 4500)}
 
       const directorSections: string[] = [];
 
-      for (
-        let sceneNumber = 1;
-        sceneNumber <= SCENE_COUNT;
-        sceneNumber++
-      ) {
+      for (let sceneNumber = 1; sceneNumber <= SCENE_COUNT; sceneNumber++) {
         setDirectorStage(
           `AI Director создаёт план сцены ${sceneNumber} из ${SCENE_COUNT}...`
         );
@@ -800,7 +770,6 @@ ${currentScene}
     }
   };
 
-  // Проверка качества сценария.
   const handleQualityCheck = async () => {
     if (!generatedStory.trim()) {
       setQualityCheckError('Сначала создай сценарий.');
@@ -925,11 +894,10 @@ ${compactText(generatedStory, 5000)}
 
   return (
     <div className="mx-auto max-w-[1400px] space-y-6">
-      {/* AI Scriptwriter */}
       <div className="rounded-xl border border-[#7C3AED]/40 bg-[#0B1120] p-5 space-y-4">
         <div>
           <h2 className="text-lg font-semibold text-white">
-            AI Scriptwriter — Qwen 3.5 4B
+            AI Scriptwriter — Qwen 3 8B
           </h2>
 
           <p className="mt-1 text-xs text-slate-400">
@@ -956,29 +924,21 @@ ${compactText(generatedStory, 5000)}
           disabled={isGenerating || isQualityChecking || isDirecting}
           className="rounded-lg bg-[#7C3AED] px-5 py-2.5 text-sm font-semibold text-white hover:bg-[#6D28D9] disabled:opacity-50"
         >
-          {isGenerating
-            ? 'Qwen создаёт эпизод...'
-            : 'Создать эпизод 2–3 минуты'}
+          {isGenerating ? 'Qwen создаёт эпизод...' : 'Создать эпизод 2–3 минуты'}
         </button>
 
         {generationStage && (
-          <p className="text-xs text-violet-300">
-            {generationStage}
-          </p>
+          <p className="text-xs text-violet-300">{generationStage}</p>
         )}
 
         {generationError && (
-          <p className="text-sm text-rose-400">
-            {generationError}
-          </p>
+          <p className="text-sm text-rose-400">{generationError}</p>
         )}
 
         {generatedStory && (
           <div className="rounded-lg border border-[#1E293B] bg-[#060913] p-4 space-y-4">
             <div>
-              <h3 className="mb-3 font-semibold text-white">
-                Готовый сценарий
-              </h3>
+              <h3 className="mb-3 font-semibold text-white">Готовый сценарий</h3>
 
               <div className="whitespace-pre-wrap text-sm leading-7 text-slate-300">
                 {generatedStory}
@@ -1010,9 +970,7 @@ ${compactText(generatedStory, 5000)}
               )}
 
               {qualityCheckError && (
-                <p className="text-sm text-rose-400">
-                  {qualityCheckError}
-                </p>
+                <p className="text-sm text-rose-400">{qualityCheckError}</p>
               )}
 
               {qualityReview && (
@@ -1036,13 +994,12 @@ ${compactText(generatedStory, 5000)}
         )}
       </div>
 
-      {/* AI Director */}
       <div className="rounded-xl border border-[#0D9488]/40 bg-[#0B1120] p-5 space-y-4">
         <div>
           <div className="flex items-center gap-2">
             <Clapperboard className="h-5 w-5 text-teal-300" />
             <h2 className="text-lg font-semibold text-white">
-              AI Director — Qwen 3.5 4B
+              AI Director — Qwen 3 8B
             </h2>
           </div>
 
@@ -1087,9 +1044,7 @@ ${compactText(generatedStory, 5000)}
         )}
 
         {directorError && (
-          <p className="text-sm text-rose-400">
-            {directorError}
-          </p>
+          <p className="text-sm text-rose-400">{directorError}</p>
         )}
 
         {directorPlan && (
@@ -1117,7 +1072,6 @@ ${compactText(generatedStory, 5000)}
         )}
       </div>
 
-      {/* Automatic Continuity Audit */}
       {continuityAudit && (
         <div className="rounded-xl border border-[#7C3AED]/30 bg-[#0B1120] p-5 space-y-3">
           <h3 className="font-semibold text-white">
@@ -1135,7 +1089,6 @@ ${compactText(generatedStory, 5000)}
         </div>
       )}
 
-      {/* Generation Report */}
       {generationReport && (
         <div className="rounded-xl border border-[#1E293B] bg-[#0B1120] p-5 space-y-4">
           <h3 className="font-semibold text-white">
@@ -1151,18 +1104,14 @@ ${compactText(generatedStory, 5000)}
             </div>
 
             <div>
-              <p className="text-xs text-slate-500">
-                Произносимые слова
-              </p>
+              <p className="text-xs text-slate-500">Произносимые слова</p>
               <p className="text-lg font-semibold text-white">
                 {generationReport.spokenWords}
               </p>
             </div>
 
             <div>
-              <p className="text-xs text-slate-500">
-                Оценка длительности
-              </p>
+              <p className="text-xs text-slate-500">Оценка длительности</p>
               <p className="text-lg font-semibold text-white">
                 {formatDuration(generationReport.estimatedSeconds)}
               </p>
@@ -1177,8 +1126,7 @@ ${compactText(generatedStory, 5000)}
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
               {generationReport.sceneWordCounts.map((words, index) => {
                 const unusuallyShortOrLong =
-                  words > 0 &&
-                  (words < 35 || words > 90);
+                  words > 0 && (words < 35 || words > 90);
 
                 return (
                   <div
@@ -1221,10 +1169,7 @@ ${compactText(generatedStory, 5000)}
               </p>
 
               {generationReport.warnings.map((warning, index) => (
-                <p
-                  key={index}
-                  className="text-xs text-amber-200"
-                >
+                <p key={index} className="text-xs text-amber-200">
                   • {warning}
                 </p>
               ))}
@@ -1238,7 +1183,6 @@ ${compactText(generatedStory, 5000)}
         </div>
       )}
 
-      {/* Agent Slots */}
       <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-[#1E293B] bg-[#0B1120] p-5">
         <div>
           <h2 className="text-base font-semibold text-white">
@@ -1253,9 +1197,7 @@ ${compactText(generatedStory, 5000)}
         </div>
 
         <div className="text-right font-mono-tabular">
-          <div className="text-xs text-slate-400">
-            Занято черновиками
-          </div>
+          <div className="text-xs text-slate-400">Занято черновиками</div>
           <div className="text-xl font-bold text-white">
             {reservedCount} / 10
           </div>
@@ -1355,7 +1297,6 @@ ${compactText(generatedStory, 5000)}
         })}
       </div>
 
-      {/* Slot Reservation Modal */}
       {editingSlot && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4"
@@ -1419,14 +1360,10 @@ ${compactText(generatedStory, 5000)}
 
                 <select
                   value={targetModelCategory}
-                  onChange={(e) =>
-                    setTargetModelCategory(e.target.value)
-                  }
+                  onChange={(e) => setTargetModelCategory(e.target.value)}
                   className="w-full rounded-lg border border-[#1E293B] bg-[#060913] px-3 py-2 text-sm text-white focus:border-[#8B5CF6] focus:outline-none"
                 >
-                  <option value="Текст и сценарии">
-                    Текст и сценарии
-                  </option>
+                  <option value="Текст и сценарии">Текст и сценарии</option>
                   <option value="Изображения">Изображения</option>
                   <option value="Видео-генерация">Видео-генерация</option>
                   <option value="Аудио и голос">Аудио и голос</option>
