@@ -1,3 +1,4 @@
+
 import React, { useState } from 'react';
 import { Bot, Edit3, RotateCcw, X } from 'lucide-react';
 import { useStudioStore } from '../store/useStudioStore';
@@ -26,29 +27,55 @@ export const AgentManagerView: React.FC = () => {
     setGeneratedStory('');
 
     try {
-      const response = await fetch('/api/generate-script', {
+      const response = await fetch('http://localhost:11434/api/generate', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ idea: idea.trim() }),
+        body: JSON.stringify({
+          model: 'qwen3:4b',
+          prompt: `/no_think
+Ты профессиональный сценарист AI-анимации.
+Создай оригинальную, эмоциональную и кинематографичную историю на русском языке.
+Добавь название, персонажей, сильное начало, развитие, неожиданный поворот и законченный финал.
+Выведи только готовый сценарий, без рассуждений.
+
+Идея истории: ${idea.trim()}`,
+          stream: false,
+          think: false,
+          options: {
+            temperature: 0.7,
+            num_predict: 4000,
+          },
+        }),
       });
 
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(data.error || 'Ошибка генерации');
+        throw new Error(data.error || 'Ошибка Ollama');
       }
 
-      setGeneratedStory(data.story);
+      const story = (data.response || '')
+        .replace(/<think>[\s\S]*?<\/think>/gi, '')
+        .trim();
+
+      if (!story) {
+        throw new Error('Qwen не вернула текст истории.');
+      }
+
+      setGeneratedStory(story);
     } catch (error) {
       setGenerationError(
-        error instanceof Error ? error.message : 'Не удалось создать сценарий.'
+        error instanceof Error
+          ? error.message
+          : 'Не удалось создать сценарий.'
       );
     } finally {
       setIsGenerating(false);
     }
   };
+
   const reservedCount = workspace.agentSlots.filter((s) => s.status === 'reserved').length;
 
   const openSlotEditor = (slot: AgentSlot) => {
@@ -78,11 +105,11 @@ export const AgentManagerView: React.FC = () => {
 
   return (
     <div className="mx-auto max-w-[1400px] space-y-6">
-            {/* AI Scriptwriter */}
+      {/* AI Scriptwriter */}
       <div className="rounded-xl border border-[#7C3AED]/40 bg-[#0B1120] p-5 space-y-4">
         <div>
           <h2 className="text-lg font-semibold text-white">
-            AI Scriptwriter — Gemini
+            AI Scriptwriter — Qwen
           </h2>
           <p className="mt-1 text-xs text-slate-400">
             Первый рабочий ИИ-агент нашей платформы.
@@ -103,7 +130,7 @@ export const AgentManagerView: React.FC = () => {
           disabled={isGenerating}
           className="rounded-lg bg-[#7C3AED] px-5 py-2.5 text-sm font-semibold text-white hover:bg-[#6D28D9] disabled:opacity-50"
         >
-          {isGenerating ? 'Gemini создаёт сценарий...' : 'Создать сценарий'}
+          {isGenerating ? 'Qwen создаёт сценарий...' : 'Создать сценарий'}
         </button>
 
         {generationError && (
@@ -119,6 +146,7 @@ export const AgentManagerView: React.FC = () => {
           </div>
         )}
       </div>
+
       <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-[#1E293B] bg-[#0B1120] p-5">
         <div>
           <h2 className="text-base font-semibold text-white">
@@ -322,3 +350,4 @@ export const AgentManagerView: React.FC = () => {
     </div>
   );
 };
+
