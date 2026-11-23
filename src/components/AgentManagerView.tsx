@@ -1144,7 +1144,10 @@ ${compactText(generatedStory, 5000)}
               AI Director — Qwen 3 8B
             </h2>
           </div>
-
+<AIOrchestratorPanel
+  initialStory={generatedStory}
+  onApplyFinalStory={(story) => setGeneratedStory(story)}
+/>
           <p className="mt-1 text-xs text-slate-400">
             Превращает готовый сценарий в режиссёрский план для последующей
             генерации изображений и видео.
