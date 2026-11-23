@@ -1136,7 +1136,7 @@ ${compactText(generatedStory, 5000)}
         )}
       </div>
 
-      {/* AI ORCHESTRATOR — отдельная секция между Scriptwriter и Director */}
+      {/* AI ORCHESTRATOR — шесть последовательных AI-агентов */}
       <AIOrchestratorPanel
         initialStory={generatedStory}
         onApplyFinalStory={(story) => {
@@ -1347,13 +1347,13 @@ ${compactText(generatedStory, 5000)}
       <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-[#1E293B] bg-[#0B1120] p-5">
         <div>
           <h2 className="text-base font-semibold text-white">
-            Реестр слотов агентов (10 слотов)
+            Реестр дополнительных слотов агентов (10 слотов)
           </h2>
 
           <p className="mt-1 text-xs text-slate-400 max-w-2xl">
-            На текущем этапе фундамента ИИ-агенты не создаются и не
-            запускаются. Здесь подготовлены 10 изолированных слотов для
-            планирования будущей архитектуры автоматизации.
+            AI Orchestrator управляет шестью последовательными AI-агентами.
+            Реестр ниже предназначен для резервирования дополнительных
+            ролей и планирования будущих интеграций.
           </p>
         </div>
 
@@ -1482,8 +1482,8 @@ ${compactText(generatedStory, 5000)}
 
             <form onSubmit={handleSaveSlot} className="mt-4 space-y-4">
               <p className="text-xs text-slate-400">
-                Это только резервная спецификация. Автоматическое
-                выполнение и ИИ-вызовы не выполняются.
+                Этот раздел предназначен для резервирования дополнительных
+                ролей. Запуск AI-агентов выполняется через AI Orchestrator.
               </p>
 
               <div>
