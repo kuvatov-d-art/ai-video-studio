@@ -1,6 +1,14 @@
 
 import React, { useState } from 'react';
-import { Bot, Edit3, RotateCcw, X, CheckCircle2, Search } from 'lucide-react';
+import {
+  Bot,
+  Edit3,
+  RotateCcw,
+  X,
+  CheckCircle2,
+  Search,
+  Clapperboard,
+} from 'lucide-react';
 import { useStudioStore } from '../store/useStudioStore';
 import { AgentSlot } from '../types/studio';
 
@@ -68,6 +76,71 @@ const SCRIPTWRITER_SYSTEM = `
 3. Не описывай работу камеры, монтаж и технические параметры съёмки.
 4. Не показывай рассуждения и черновики.
 5. Выполняй только указанную задачу.
+`;
+
+const DIRECTOR_SYSTEM = `
+Ты профессиональный кинорежиссёр, оператор-постановщик и специалист по визуальному повествованию.
+
+Твоя задача — превратить готовый сценарий в подробный план съёмки для AI-видеопроизводства.
+
+ОБЯЗАТЕЛЬНЫЕ ПРАВИЛА:
+1. Работай только с событиями исходного сценария.
+2. Не переписывай сюжет и диалоги.
+3. Не добавляй новых персонажей, событий и локаций без необходимости.
+4. Сохраняй внешность, одежду, возраст и особенности персонажей между кадрами.
+5. Соблюдай последовательность событий.
+6. Каждый кадр должен визуально передавать конкретный момент сценария.
+7. Не создавай кадры, противоречащие действиям персонажей.
+8. Используй разнообразные планы: общий, средний, крупный и детальный.
+9. Указывай движение камеры только там, где оно действительно нужно.
+10. Указывай освещение, атмосферу, эмоции и действия.
+11. Не используй текстовые надписи внутри изображения, если их нет в сценарии.
+12. Не используй случайные визуальные детали.
+13. Пиши на русском языке.
+14. Не показывай рассуждения и черновики.
+
+ФОРМАТ РЕЗУЛЬТАТА:
+
+НАЗВАНИЕ ЭПИЗОДА:
+
+ОБЩИЙ ВИЗУАЛЬНЫЙ СТИЛЬ:
+Опиши единый кинематографический стиль всего эпизода.
+
+ПОСТОЯНСТВО ПЕРСОНАЖЕЙ:
+Для каждого персонажа укажи внешность, возраст, одежду и отличительные особенности. Не меняй их в разных кадрах.
+
+ЛОКАЦИИ:
+Перечисли локации и их визуальные особенности.
+
+РЕЖИССЁРСКИЙ ПЛАН:
+
+Для каждой из пяти сцен создай последовательность кадров.
+
+Для каждого кадра обязательно укажи:
+
+КАДР:
+ДЛИТЕЛЬНОСТЬ:
+МЕСТО:
+ПЕРСОНАЖИ:
+ТИП ПЛАНА:
+РАКУРС:
+ДЕЙСТВИЕ:
+ЭМОЦИИ:
+ДВИЖЕНИЕ КАМЕРЫ:
+ОСВЕЩЕНИЕ:
+ВИЗУАЛЬНОЕ ОПИСАНИЕ:
+
+ДЛИТЕЛЬНОСТЬ:
+Общая продолжительность всех кадров должна ориентировочно соответствовать длительности исходного эпизода.
+Не растягивай простые действия.
+Не делай каждый кадр одинаковой длины.
+Используй ориентировочно 4–10 секунд на кадр, если действие позволяет.
+
+ВАЖНО:
+Каждый кадр должен быть пригоден для последующей генерации изображения или видео.
+Описания должны быть конкретными и визуально понятными.
+Не объединяй разные действия в один кадр, если это мешает визуальной последовательности.
+Выведи только режиссёрский план.
 `;
 
 const SCENE_PURPOSES = [
@@ -289,6 +362,11 @@ export const AgentManagerView: React.FC = () => {
   const [isQualityChecking, setIsQualityChecking] = useState(false);
   const [qualityCheckError, setQualityCheckError] = useState('');
 
+  // Состояние AI Director.
+  const [directorPlan, setDirectorPlan] = useState('');
+  const [isDirecting, setIsDirecting] = useState(false);
+  const [directorError, setDirectorError] = useState('');
+
   // Корректировка объёма одной сцены.
   const adjustSceneLength = async (
     scene: string,
@@ -388,6 +466,8 @@ ${adjustmentDirection}
     setContinuityAudit('');
     setQualityReview('');
     setQualityCheckError('');
+    setDirectorPlan('');
+    setDirectorError('');
 
     try {
       // ЭТАП 1. Создание сюжетной основы.
@@ -772,6 +852,64 @@ ${finalStory}
     }
   };
 
+  // AI Director: создание режиссёрского плана по готовому сценарию.
+  const handleCreateDirectorPlan = async () => {
+    if (!generatedStory.trim()) {
+      setDirectorError('Сначала создай сценарий в AI Scriptwriter.');
+      return;
+    }
+
+    setIsDirecting(true);
+    setDirectorError('');
+    setDirectorPlan('');
+
+    try {
+      const plan = await askQwen(
+        [
+          {
+            role: 'system',
+            content: DIRECTOR_SYSTEM,
+          },
+          {
+            role: 'user',
+            content: `
+Создай режиссёрский план для следующего готового эпизода.
+
+ИСХОДНЫЙ СЦЕНАРИЙ:
+${generatedStory}
+
+ТРЕБОВАНИЯ К РЕЗУЛЬТАТУ:
+1. Сохрани все пять сцен и их последовательность.
+2. Разбей каждую сцену на отдельные визуальные кадры.
+3. Для каждого кадра укажи все поля из заданного формата.
+4. Сохрани внешность и одежду персонажей во всех кадрах.
+5. Не добавляй события, которых нет в сценарии.
+6. Важные эмоции и реакции героев должны быть показаны визуально.
+7. Кадры должны быть пригодны для дальнейшей генерации AI-видео.
+8. Продолжительность кадров должна соответствовать динамике истории.
+9. Общая продолжительность плана должна быть ориентировочно 2–3 минуты.
+10. Не переписывай диалоги и не создавай новый сценарий.
+
+Создай подробный, последовательный и практически применимый режиссёрский план.
+`,
+          },
+        ],
+        5000,
+        0.3
+      );
+
+      setDirectorPlan(plan);
+    } catch (error) {
+      setDirectorError(
+        error instanceof Error
+          ? error.message
+          : 'Не удалось создать режиссёрский план.'
+      );
+    } finally {
+      setIsDirecting(false);
+    }
+  };
+
   // Подробная проверка качества по кнопке.
   const handleQualityCheck = async () => {
     if (!generatedStory.trim()) {
@@ -942,7 +1080,7 @@ ${generatedStory}
         <button
           type="button"
           onClick={handleGenerateStory}
-          disabled={isGenerating || isQualityChecking}
+          disabled={isGenerating || isQualityChecking || isDirecting}
           className="rounded-lg bg-[#7C3AED] px-5 py-2.5 text-sm font-semibold text-white hover:bg-[#6D28D9] disabled:opacity-50"
         >
           {isGenerating
@@ -978,7 +1116,7 @@ ${generatedStory}
               <button
                 type="button"
                 onClick={handleQualityCheck}
-                disabled={isGenerating || isQualityChecking}
+                disabled={isGenerating || isQualityChecking || isDirecting}
                 className="inline-flex items-center gap-2 rounded-lg border border-[#7C3AED]/50 bg-[#18112B] px-4 py-2.5 text-sm font-semibold text-violet-200 hover:bg-[#261A42] disabled:opacity-50"
               >
                 {isQualityChecking ? (
@@ -1021,6 +1159,86 @@ ${generatedStory}
                 </div>
               )}
             </div>
+          </div>
+        )}
+      </div>
+
+      {/* AI Director */}
+      <div className="rounded-xl border border-[#0D9488]/40 bg-[#0B1120] p-5 space-y-4">
+        <div>
+          <div className="flex items-center gap-2">
+            <Clapperboard className="h-5 w-5 text-teal-300" />
+            <h2 className="text-lg font-semibold text-white">
+              AI Director — Qwen 3.5 4B
+            </h2>
+          </div>
+
+          <p className="mt-1 text-xs text-slate-400">
+            Превращает готовый сценарий в режиссёрский план для последующей
+            генерации изображений и видео.
+          </p>
+
+          <p className="mt-2 text-xs text-teal-300">
+            Кадры · планы камеры · действия · эмоции · освещение · хронометраж.
+          </p>
+        </div>
+
+        <button
+          type="button"
+          onClick={handleCreateDirectorPlan}
+          disabled={
+            !generatedStory.trim() ||
+            isGenerating ||
+            isQualityChecking ||
+            isDirecting
+          }
+          className="inline-flex items-center gap-2 rounded-lg bg-teal-700 px-5 py-2.5 text-sm font-semibold text-white hover:bg-teal-600 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          <Clapperboard className="h-4 w-4" />
+          {isDirecting
+            ? 'Qwen создаёт режиссёрский план...'
+            : 'Создать режиссёрский план'}
+        </button>
+
+        {!generatedStory.trim() && (
+          <p className="text-xs text-slate-500">
+            Сначала создай сценарий в AI Scriptwriter. После этого кнопка станет доступна.
+          </p>
+        )}
+
+        {isDirecting && (
+          <p className="text-xs text-teal-300">
+            Анализирую сцены и формирую последовательность кадров. Это может занять несколько минут.
+          </p>
+        )}
+
+        {directorError && (
+          <p className="text-sm text-rose-400">
+            {directorError}
+          </p>
+        )}
+
+        {directorPlan && (
+          <div className="rounded-lg border border-[#134E4A] bg-[#060913] p-4 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h3 className="font-semibold text-white">
+                Режиссёрский план эпизода
+              </h3>
+
+              <span className="rounded-md border border-teal-800 bg-teal-950 px-2 py-1 text-[11px] text-teal-300">
+                AI Director
+              </span>
+            </div>
+
+            <div className="whitespace-pre-wrap text-sm leading-7 text-slate-300">
+              {directorPlan}
+            </div>
+
+            <p className="border-t border-[#1E293B] pt-3 text-[11px] text-slate-500">
+              Режиссёрский план создан нейросетью. Перед передачей следующему
+              агенту проверь постоянство персонажей, последовательность кадров
+              и общую продолжительность.
+            </p>
           </div>
         )}
       </div>
