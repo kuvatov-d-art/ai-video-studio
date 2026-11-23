@@ -1136,6 +1136,23 @@ ${compactText(generatedStory, 5000)}
         )}
       </div>
 
+      {/* AI ORCHESTRATOR — отдельная секция между Scriptwriter и Director */}
+      <AIOrchestratorPanel
+        initialStory={generatedStory}
+        onApplyFinalStory={(story) => {
+          setGeneratedStory(story);
+          setQualityReview('');
+          setQualityCheckError('');
+          setDirectorPlan('');
+          setDirectorError('');
+          setDirectorStage('');
+          setContinuityAudit('');
+          setGenerationReport(null);
+          setGenerationError('');
+        }}
+      />
+
+      {/* AI DIRECTOR */}
       <div className="rounded-xl border border-[#0D9488]/40 bg-[#0B1120] p-5 space-y-4">
         <div>
           <div className="flex items-center gap-2">
@@ -1144,10 +1161,7 @@ ${compactText(generatedStory, 5000)}
               AI Director — Qwen 3 8B
             </h2>
           </div>
-<AIOrchestratorPanel
-  initialStory={generatedStory}
-  onApplyFinalStory={(story) => setGeneratedStory(story)}
-/>
+
           <p className="mt-1 text-xs text-slate-400">
             Превращает готовый сценарий в режиссёрский план для последующей
             генерации изображений и видео.
