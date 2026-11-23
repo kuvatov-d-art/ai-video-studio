@@ -6,7 +6,10 @@ import { AgentSlot } from '../types/studio';
 
 const OLLAMA_URL = 'http://localhost:11434/api/chat';
 const QWEN_MODEL = 'qwen3.5:4b';
+
 const SCENE_COUNT = 5;
+const SCENE_MIN_WORDS = 56;
+const SCENE_MAX_WORDS = 70;
 
 type ChatMessage = {
   role: 'system' | 'user';
@@ -25,6 +28,7 @@ type OllamaChatResult = {
 type GenerationReport = {
   sceneCount: number;
   spokenWords: number;
+  sceneWordCounts: number[];
   estimatedSeconds: number;
   warnings: string[];
 };
@@ -142,18 +146,44 @@ function countWords(text: string): number {
   return words ? words.length : 0;
 }
 
+// Извлекает реплики персонажей, не включая описания места и действий.
 function extractDialogueText(script: string): string {
   const result: string[] = [];
 
+  const nonDialogueLabels = new Set([
+    'место',
+    'время',
+    'действие',
+    'действия',
+    'визуальное описание',
+    'эмоции',
+    'диалоги',
+    'название',
+    'жанр',
+    'персонажи',
+    'финал',
+    'продолжительность',
+    'хронометраж',
+    'атмосфера',
+  ]);
+
   for (const line of script.split('\n')) {
-    const cleaned = line.replace(/\*\*/g, '').trim();
+    const cleaned = line
+      .replace(/\*\*/g, '')
+      .replace(/^#{1,6}\s*/, '')
+      .trim();
 
     const speakerMatch = cleaned.match(
       /^([А-ЯЁ][А-ЯЁа-яё -]{1,34})(?:\s*\([^)]*\))?\s*[:—]\s*(.+)$/u
     );
 
     if (speakerMatch) {
-      result.push(speakerMatch[2]);
+      const label = speakerMatch[1].trim().toLowerCase();
+
+      if (!nonDialogueLabels.has(label)) {
+        result.push(speakerMatch[2]);
+      }
+
       continue;
     }
 
@@ -163,6 +193,10 @@ function extractDialogueText(script: string): string {
   }
 
   return result.join(' ');
+}
+
+function countDialogueWords(script: string): number {
+  return countWords(extractDialogueText(script));
 }
 
 function countScenes(script: string): number {
@@ -187,6 +221,18 @@ function countRepeatedLines(script: string): number {
   }
 
   return [...counts.values()].filter((count) => count > 1).length;
+}
+
+function distanceFromTarget(words: number): number {
+  if (words < SCENE_MIN_WORDS) {
+    return SCENE_MIN_WORDS - words;
+  }
+
+  if (words > SCENE_MAX_WORDS) {
+    return words - SCENE_MAX_WORDS;
+  }
+
+  return 0;
 }
 
 function formatDuration(seconds: number): string {
@@ -215,10 +261,94 @@ export const AgentManagerView: React.FC = () => {
   const [generationReport, setGenerationReport] =
     useState<GenerationReport | null>(null);
 
-  // AI Story Quality Control
   const [qualityReview, setQualityReview] = useState('');
   const [isQualityChecking, setIsQualityChecking] = useState(false);
   const [qualityCheckError, setQualityCheckError] = useState('');
+
+  // Автоматическое исправление объёма отдельной сцены.
+  const adjustSceneLength = async (
+    scene: string,
+    sceneNumber: number,
+    outline: string,
+    previousScenes: string[]
+  ): Promise<string> => {
+    const originalWords = countDialogueWords(scene);
+
+    if (
+      originalWords >= SCENE_MIN_WORDS &&
+      originalWords <= SCENE_MAX_WORDS
+    ) {
+      return scene;
+    }
+
+    const adjustmentDirection =
+      originalWords < SCENE_MIN_WORDS
+        ? `Увеличь количество произносимых слов. Сейчас их ${originalWords}, необходимо от ${SCENE_MIN_WORDS} до ${SCENE_MAX_WORDS}. Добавь естественные реплики, которые раскрывают характеры, конфликт или новую информацию.`
+        : `Сократи количество произносимых слов. Сейчас их ${originalWords}, необходимо от ${SCENE_MIN_WORDS} до ${SCENE_MAX_WORDS}. Убери лишние реплики и повторы, сохранив важную информацию.`;
+
+    const corrected = await askQwen(
+      [
+        {
+          role: 'system',
+          content: SCRIPTWRITER_SYSTEM,
+        },
+        {
+          role: 'user',
+          content: `
+Ты редактор одной сцены короткого мини-сериала.
+
+ИСХОДНАЯ ИДЕЯ:
+${idea.trim()}
+
+ПЛАН ЭПИЗОДА:
+${outline}
+
+ПРЕДЫДУЩИЕ СЦЕНЫ:
+${previousScenes.length > 0
+  ? previousScenes.join('\n\n')
+  : 'Предыдущих сцен нет.'}
+
+СЦЕНА ДЛЯ РЕДАКТИРОВАНИЯ:
+${scene}
+
+ЗАДАЧА:
+${adjustmentDirection}
+
+СТРОГИЕ ПРАВИЛА:
+1. Верни всю сцену целиком.
+2. Сохрани её номер, место, время и основные события.
+3. Не меняй имена, характеры и отношения персонажей.
+4. Не добавляй новые сюжетные события.
+5. Не меняй смысл и причинно-следственную связь.
+6. Изменяй только необходимую часть диалогов и кратких действий.
+7. Считай только произносимые персонажами слова.
+8. Не пытайся увеличить объём описаниями действий.
+9. Диалоги должны быть естественными.
+10. Пиши только на русском языке.
+11. Не добавляй другие сцены и редакторские комментарии.
+
+Выведи только исправленную сцену ${sceneNumber}.
+`,
+        },
+      ],
+      1100,
+      0.4
+    );
+
+    const normalized = normalizeSceneHeading(corrected, sceneNumber);
+    const correctedWords = countDialogueWords(normalized);
+
+    // Не принимаем исправление, если оно стало ещё дальше от нормы.
+    if (
+      correctedWords > 0 &&
+      distanceFromTarget(correctedWords) <=
+        distanceFromTarget(originalWords)
+    ) {
+      return normalized;
+    }
+
+    return scene;
+  };
 
   const handleGenerateStory = async () => {
     if (!idea.trim()) {
@@ -251,28 +381,23 @@ export const AgentManagerView: React.FC = () => {
 ${idea.trim()}
 
 ТРЕБОВАНИЯ:
-1. Это один эпизод продолжительностью от 2 до 3 минут.
-2. Запланируй ровно 5 сцен.
-3. Сохрани тему, жанр и всех персонажей, указанных пользователем.
+1. Эпизод продолжительностью от 2 до 3 минут.
+2. Ровно 5 сцен.
+3. Сохрани тему, жанр и всех персонажей пользователя.
 4. Не меняй имена и отношения персонажей.
 5. У каждого главного персонажа должна быть понятная мотивация.
 6. Каждая сцена должна иметь отдельную функцию.
 7. События должны логически вытекать друг из друга.
 8. Подготовь сильный поворот для пятой сцены.
 9. Не раскрывай все тайны сериала.
-10. Не пиши готовые диалоги и художественный сценарий.
-11. План должен быть кратким, конкретным и последовательным.
+10. Не пиши готовые диалоги.
+11. План должен быть кратким и последовательным.
 
 СТРОГИЙ ФОРМАТ:
 
 НАЗВАНИЕ:
-Название сериала и эпизода.
-
 ЖАНР:
-Основной жанр.
-
 ПЕРСОНАЖИ:
-Имя — роль, характер и мотивация.
 
 --- ПЛАН СЦЕН ---
 
@@ -335,24 +460,26 @@ ${previousScenes}
 ТЕПЕРЬ НАПИШИ:
 ${SCENE_PURPOSES[sceneNumber - 1]}
 
-ТРЕБОВАНИЯ К ЭТОЙ СЦЕНЕ:
+ТРЕБОВАНИЯ:
 1. Напиши только сцену номер ${sceneNumber}.
-2. В диалогах этой сцены должно быть 50–60 произносимых слов. 60 слов — строгий максимум.
-3. Пять сцен вместе должны содержать примерно 280–330 произносимых слов.
-4. Не растягивай диалоги ради объёма.
-5. Каждая реплика должна раскрывать характер, конфликт или новую информацию.
-6. Если сцена достигла 60 произносимых слов, заверши её естественно.
-7. Считай только слова, которые персонажи произносят вслух.
-8. Не добавляй длинные монологи.
-9. Перед диалогами кратко укажи место, время и действие.
-10. Не описывай камеру, монтаж, ракурсы и технические детали видео.
-11. Не добавляй новых персонажей без необходимости.
-12. Пиши исключительно грамотным русским языком.
-13. Не добавляй другие сцены.
-14. Не объясняй свои действия.
-15. Для пятой сцены обязательно создай сильный клиффхэнгер.
+2. Диалоги должны содержать от ${SCENE_MIN_WORDS} до ${SCENE_MAX_WORDS} произносимых слов.
+3. Не менее ${SCENE_MIN_WORDS} и не более ${SCENE_MAX_WORDS} слов должны произноситься персонажами вслух.
+4. Ориентируйся на короткие, естественные реплики.
+5. Не растягивай текст описаниями ради объёма.
+6. Используй имена и факты строго как в плане.
+7. Не меняй уже установленные события и отношения.
+8. Не повторяй информацию из предыдущих сцен.
+9. Продвигай историю новым событием или конфликтом.
+10. Реплики пиши отдельными строками в формате: ИМЯ: текст.
+11. Перед диалогами кратко укажи место, время и действие.
+12. Не описывай камеру, монтаж и ракурсы.
+13. Не добавляй новых персонажей без необходимости.
+14. Только грамотный русский язык.
+15. Не добавляй другие сцены.
+16. Не объясняй свои действия.
+17. Для пятой сцены обязательно создай сильный клиффхэнгер.
 
-ВЫВЕДИ ТОЛЬКО СЦЕНУ ${sceneNumber}.
+Верни только сцену ${sceneNumber}.
 `,
             },
           ],
@@ -360,10 +487,30 @@ ${SCENE_PURPOSES[sceneNumber - 1]}
           0.7
         );
 
-        const normalizedScene = normalizeSceneHeading(
+        let normalizedScene = normalizeSceneHeading(
           currentScene,
           sceneNumber
         );
+
+        // ЭТАП 3. Проверка и корректировка объёма каждой сцены.
+        const initialSceneWords =
+          countDialogueWords(normalizedScene);
+
+        if (
+          initialSceneWords < SCENE_MIN_WORDS ||
+          initialSceneWords > SCENE_MAX_WORDS
+        ) {
+          setGenerationStage(
+            `Корректирую объём сцены ${sceneNumber}: ${initialSceneWords} слов...`
+          );
+
+          normalizedScene = await adjustSceneLength(
+            normalizedScene,
+            sceneNumber,
+            outline,
+            scenes
+          );
+        }
 
         scenes.push(normalizedScene);
 
@@ -377,7 +524,7 @@ ${SCENE_PURPOSES[sceneNumber - 1]}
         setGeneratedStory(currentStory);
       }
 
-      // ЭТАП 3. Автоматическая техническая проверка.
+      // ЭТАП 4. Итоговая техническая проверка.
       setGenerationStage('Проверяю структуру и хронометраж...');
 
       const finalStory = [seriesInfo, ...scenes]
@@ -385,7 +532,15 @@ ${SCENE_PURPOSES[sceneNumber - 1]}
         .join('\n\n');
 
       const sceneTotal = countScenes(finalStory);
-      const spokenWords = countWords(extractDialogueText(finalStory));
+
+      const sceneWordCounts = scenes.map((scene) =>
+        countDialogueWords(scene)
+      );
+
+      const spokenWords = sceneWordCounts.reduce(
+        (total, words) => total + words,
+        0
+      );
 
       const estimatedSeconds =
         Math.round((spokenWords / 140) * 60) + 8;
@@ -397,6 +552,17 @@ ${SCENE_PURPOSES[sceneNumber - 1]}
           `Обнаружено сцен: ${sceneTotal}. Требуется ровно ${SCENE_COUNT}.`
         );
       }
+
+      sceneWordCounts.forEach((words, index) => {
+        if (
+          words < SCENE_MIN_WORDS ||
+          words > SCENE_MAX_WORDS
+        ) {
+          warnings.push(
+            `Сцена ${index + 1}: ${words} произносимых слов. Цель — ${SCENE_MIN_WORDS}–${SCENE_MAX_WORDS}.`
+          );
+        }
+      });
 
       if (spokenWords < 280) {
         warnings.push(
@@ -439,6 +605,7 @@ ${SCENE_PURPOSES[sceneNumber - 1]}
       setGenerationReport({
         sceneCount: sceneTotal,
         spokenWords,
+        sceneWordCounts,
         estimatedSeconds,
         warnings,
       });
@@ -456,7 +623,7 @@ ${SCENE_PURPOSES[sceneNumber - 1]}
     }
   };
 
-  // ЭТАП 4. Семантическая проверка сценария отдельным запросом.
+  // ЭТАП 5. Семантическая проверка сценария.
   const handleQualityCheck = async () => {
     if (!generatedStory.trim()) {
       setQualityCheckError('Сначала создай сценарий.');
@@ -481,8 +648,7 @@ ${SCENE_PURPOSES[sceneNumber - 1]}
 Не хвали сценарий без оснований.
 Не придумывай события, которых нет в тексте.
 Отличай подтверждённые ошибки от неясных моментов.
-При обнаружении проблемы указывай конкретную сцену и объясняй, в чём проблема.
-Не показывай внутренние рассуждения.
+При обнаружении проблемы указывай конкретную сцену.
 Не переписывай сценарий.
 `,
           },
@@ -491,44 +657,23 @@ ${SCENE_PURPOSES[sceneNumber - 1]}
             content: `
 Проведи профессиональную проверку этого эпизода.
 
-ИСХОДНАЯ ИДЕЯ ПОЛЬЗОВАТЕЛЯ:
+ИСХОДНАЯ ИДЕЯ:
 ${idea.trim()}
 
 ГОТОВЫЙ СЦЕНАРИЙ:
 ${generatedStory}
 
-ПРОВЕРЬ СЛЕДУЮЩИЕ КРИТЕРИИ:
+ПРОВЕРЬ:
 
-1. СООТВЕТСТВИЕ ИДЕЕ:
-Не ушёл ли сюжет от исходной идеи пользователя?
-Не изменены ли важные события и отношения персонажей?
-
-2. ЛОГИКА СОБЫТИЙ:
-Вытекает ли каждая сцена из предыдущей?
-Нет ли внезапных, необъяснимых поступков?
-Нет ли событий, которые противоречат друг другу?
-
-3. ПЕРСОНАЖИ:
-Сохраняются ли имена, возраст, роли и отношения?
-Понятны ли мотивы Александра, Марии и Ивана?
-Не меняются ли характеры без причины?
-
-4. ДИАЛОГИ:
-Звучат ли реплики естественно?
-Соответствуют ли они ситуации и характерам?
-Нет ли пустых, неуместных или повторяющихся реплик?
-
-5. ПОВТОРЫ:
-Есть ли повторяющиеся события, фразы или описания?
-
-6. РУССКИЙ ЯЗЫК:
-Есть ли грамматические ошибки, бессмысленные предложения или иностранные слова?
-
-7. ДРАМАТУРГИЯ:
-Есть ли интрига в начале?
-Усиливается ли конфликт?
-Есть ли развитие в каждой сцене?
-Есть ли сильный поворот в конце?
+1. Соответствие исходной идее.
+2. Логику и последовательность событий.
+3. Постоянство имён, характеров и отношений персонажей.
+4. Мотивацию каждого главного героя.
+5. Естественность и качество диалогов.
+6. Повторы и бессмысленные фразы.
+7. Грамматику и чистоту русского языка.
+8. Силу интриги в начале и концовки.
+9. Наличие полноценного сюжетного развития в каждой сцене.
 
 ФОРМАТ ОТЧЁТА:
 
@@ -538,33 +683,28 @@ ${generatedStory}
 ГОТОВ К ДАЛЬНЕЙШЕЙ РАБОТЕ / НУЖНА ДОРАБОТКА / НЕ ГОТОВ.
 
 СИЛЬНЫЕ СТОРОНЫ:
-Укажи только реальные достоинства.
+Только реальные достоинства.
 
 КРИТИЧЕСКИЕ ОШИБКИ:
-Перечисли конкретные ошибки с указанием номера сцены.
+Конкретные ошибки с указанием сцены.
 
 ПРОВЕРКА ПЕРСОНАЖЕЙ:
-Кратко оцени последовательность поведения каждого героя.
+Последовательность поведения каждого героя.
 
 ПРОВЕРКА СЦЕН:
 Отдельно оцени сцены 1, 2, 3, 4 и 5.
 
 ПОВТОРЫ И ЯЗЫК:
-Укажи конкретные проблемы или напиши, что явных проблем не обнаружено.
+Укажи найденные проблемы.
 
 КОНЦОВКА:
-Оцени силу интриги и желание зрителя посмотреть следующую серию.
+Оцени интригу и желание смотреть следующую серию.
 
 ЧТО ИСПРАВИТЬ:
-Дай не более пяти конкретных рекомендаций.
+Не более пяти конкретных рекомендаций.
 
-ВАЖНО:
-- Не переписывай сценарий.
-- Не добавляй придуманные факты.
-- Не подменяй исходную идею.
-- Не выдавай предположение за доказанную ошибку.
-- Если текст не содержит достаточной информации, прямо укажи это.
-
+Не переписывай сценарий.
+Не добавляй придуманные факты.
 Выведи только редакторский отчёт.
 `,
           },
@@ -631,8 +771,7 @@ ${generatedStory}
           </h2>
 
           <p className="mt-1 text-xs text-slate-400">
-            Локальная генерация мини-сериалов: планирование, пять сцен и
-            автоматическая проверка.
+            Планирование, генерация пяти сцен и автоматическая коррекция объёма.
           </p>
 
           <p className="mt-2 text-xs text-violet-300">
@@ -704,8 +843,7 @@ ${generatedStory}
 
               {isQualityChecking && (
                 <p className="text-xs text-violet-300">
-                  Проверяю логику событий, персонажей, диалоги,
-                  повторы и концовку...
+                  Проверяю логику, персонажей, диалоги, повторы и концовку...
                 </p>
               )}
 
@@ -726,7 +864,7 @@ ${generatedStory}
                   </div>
 
                   <p className="mt-4 border-t border-[#1E293B] pt-3 text-[11px] text-slate-500">
-                    Это оценка нейросети. Она помогает найти проблемы,
+                    Это оценка нейросети. Она помогает находить проблемы,
                     но не гарантирует отсутствие всех ошибок.
                   </p>
                 </div>
@@ -736,8 +874,9 @@ ${generatedStory}
         )}
       </div>
 
+      {/* Generation Report */}
       {generationReport && (
-        <div className="rounded-xl border border-[#1E293B] bg-[#0B1120] p-5 space-y-3">
+        <div className="rounded-xl border border-[#1E293B] bg-[#0B1120] p-5 space-y-4">
           <h3 className="font-semibold text-white">
             Автоматическая проверка эпизода
           </h3>
@@ -766,6 +905,43 @@ ${generatedStory}
               <p className="text-lg font-semibold text-white">
                 {formatDuration(generationReport.estimatedSeconds)}
               </p>
+            </div>
+          </div>
+
+          <div className="border-t border-[#1E293B] pt-3 space-y-2">
+            <p className="text-xs font-semibold text-slate-300">
+              Объём диалогов по сценам
+            </p>
+
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+              {generationReport.sceneWordCounts.map((words, index) => {
+                const inRange =
+                  words >= SCENE_MIN_WORDS &&
+                  words <= SCENE_MAX_WORDS;
+
+                return (
+                  <div
+                    key={index}
+                    className="rounded-lg border border-[#1E293B] bg-[#060913] p-2"
+                  >
+                    <p className="text-[11px] text-slate-500">
+                      Сцена {index + 1}
+                    </p>
+
+                    <p
+                      className={`text-sm font-semibold ${
+                        inRange ? 'text-emerald-400' : 'text-amber-300'
+                      }`}
+                    >
+                      {words} слов
+                    </p>
+
+                    <p className="text-[10px] text-slate-500">
+                      Цель: {SCENE_MIN_WORDS}–{SCENE_MAX_WORDS}
+                    </p>
+                  </div>
+                );
+              })}
             </div>
           </div>
 
@@ -799,6 +975,7 @@ ${generatedStory}
         </div>
       )}
 
+      {/* Agent Slots */}
       <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-[#1E293B] bg-[#0B1120] p-5">
         <div>
           <h2 className="text-base font-semibold text-white">
@@ -822,7 +999,6 @@ ${generatedStory}
         </div>
       </div>
 
-      {/* 10 slots grid */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
         {workspace.agentSlots.map((slot) => {
           const isEmpty = slot.status === 'empty';
