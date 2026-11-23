@@ -4,17 +4,216 @@ import { Bot, Edit3, RotateCcw, X } from 'lucide-react';
 import { useStudioStore } from '../store/useStudioStore';
 import { AgentSlot } from '../types/studio';
 
+const OLLAMA_URL = 'http://localhost:11434/api/chat';
+const QWEN_MODEL = 'qwen3.5:4b';
+const SCENE_COUNT = 5;
+
+type ChatMessage = {
+  role: 'system' | 'user';
+  content: string;
+};
+
+type OllamaChatResult = {
+  error?: string;
+  done_reason?: string;
+  message?: {
+    content?: string;
+    thinking?: string;
+  };
+};
+
+type GenerationReport = {
+  sceneCount: number;
+  spokenWords: number;
+  estimatedSeconds: number;
+  warnings: string[];
+};
+
+const SCRIPTWRITER_SYSTEM = `
+Ты профессиональный сценарист коротких кинематографичных мини-сериалов.
+
+Пиши исключительно на грамотном русском языке.
+Соблюдай последовательность событий и характеры персонажей.
+Не меняй имена, отношения и факты, заданные пользователем.
+Создавай естественные диалоги, эмоциональные конфликты и интригу.
+Не повторяй предложения, действия и сцены.
+Не используй английские слова.
+Не описывай работу камеры, монтаж и технические параметры съёмки.
+Не показывай рассуждения и черновики.
+Выполняй только указанную задачу.
+`;
+
+const SCENE_PURPOSES = [
+  'СЦЕНА 1. ЗАВЯЗКА. Начни с сильного события или интриги. Сразу заинтересуй зрителя.',
+  'СЦЕНА 2. ПОСЛЕДСТВИЯ. Покажи реакцию персонажей на первое событие. Развивай конфликт.',
+  'СЦЕНА 3. НОВАЯ ИНФОРМАЦИЯ. Добавь важную улику, секрет или неожиданное обстоятельство.',
+  'СЦЕНА 4. ОБОСТРЕНИЕ. Усиль конфликт. Поставь главного героя перед трудным выбором.',
+  'СЦЕНА 5. КЛИФФХЭНГЕР. Заверши эпизод сильным неожиданным событием, которое заставит зрителя ждать следующую серию.',
+];
+
+async function askQwen(
+  messages: ChatMessage[],
+  numPredict: number,
+  temperature: number
+): Promise<string> {
+  let response: Response;
+
+  try {
+    response = await fetch(OLLAMA_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: QWEN_MODEL,
+        messages,
+        think: false,
+        stream: false,
+        options: {
+          temperature,
+          top_p: 0.9,
+          top_k: 40,
+          repeat_last_n: 128,
+          repeat_penalty: 1.08,
+          num_predict: numPredict,
+        },
+      }),
+    });
+  } catch {
+    throw new Error(
+      'Не удалось подключиться к Ollama. Проверь, что ollama serve запущена и разрешён доступ с сайта.'
+    );
+  }
+
+  let data: OllamaChatResult;
+
+  try {
+    data = (await response.json()) as OllamaChatResult;
+  } catch {
+    throw new Error('Ollama вернула ответ в неизвестном формате.');
+  }
+
+  if (!response.ok) {
+    throw new Error(data.error || 'Ошибка при обращении к Ollama.');
+  }
+
+  if (data.done_reason === 'length') {
+    throw new Error(
+      'Qwen оборвала ответ из-за ограничения токенов. Попробуй создать сценарий ещё раз.'
+    );
+  }
+
+  const result = (data.message?.content || '')
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .replace(/\\([*_#])/g, '$1')
+    .trim();
+
+  if (!result) {
+    throw new Error('Qwen не вернула текст.');
+  }
+
+  return result;
+}
+
+function normalizeSceneHeading(
+  text: string,
+  sceneNumber: number
+): string {
+  const cleaned = text.trim();
+
+  const headingPattern =
+    /^(\s*(?:#{1,6}\s*)?(?:\*\*)?\s*СЦЕНА\s*(?:№\s*)?)\d+/i;
+
+  if (headingPattern.test(cleaned)) {
+    return cleaned.replace(
+      headingPattern,
+      (_match, prefix: string) => `${prefix}${sceneNumber}`
+    );
+  }
+
+  return `СЦЕНА ${sceneNumber}\n${cleaned}`;
+}
+
+function countWords(text: string): number {
+  const words = text.match(
+    /[A-Za-zА-Яа-яЁё0-9]+(?:[-’'][A-Za-zА-Яа-яЁё0-9]+)*/g
+  );
+
+  return words ? words.length : 0;
+}
+
+function extractDialogueText(script: string): string {
+  const result: string[] = [];
+
+  for (const line of script.split('\n')) {
+    const cleaned = line.replace(/\*\*/g, '').trim();
+
+    const speakerMatch = cleaned.match(
+      /^([А-ЯЁ][А-ЯЁа-яё -]{1,34})(?:\s*\([^)]*\))?\s*[:—]\s*(.+)$/u
+    );
+
+    if (speakerMatch) {
+      result.push(speakerMatch[2]);
+      continue;
+    }
+
+    if (/^—\s*\S/u.test(cleaned)) {
+      result.push(cleaned.replace(/^—\s*/, ''));
+    }
+  }
+
+  return result.join(' ');
+}
+
+function countScenes(script: string): number {
+  const matches = script.match(
+    /^\s*(?:#{1,6}\s*)?(?:\*\*)?\s*СЦЕНА\s*(?:№\s*)?\d+\b/gim
+  );
+
+  return matches ? matches.length : 0;
+}
+
+function countRepeatedLines(script: string): number {
+  const lines = script
+    .split('\n')
+    .map((line) => line.replace(/\*\*/g, '').trim().toLowerCase())
+    .filter((line) => line.length > 60)
+    .filter((line) => !/^сцена\s+\d+/i.test(line));
+
+  const counts = new Map<string, number>();
+
+  for (const line of lines) {
+    counts.set(line, (counts.get(line) || 0) + 1);
+  }
+
+  return [...counts.values()].filter((count) => count > 1).length;
+}
+
+function formatDuration(seconds: number): string {
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = String(seconds % 60).padStart(2, '0');
+
+  return `${minutes}:${remainingSeconds}`;
+}
+
 export const AgentManagerView: React.FC = () => {
   const { workspace, updateAgentSlot, clearAgentSlot } = useStudioStore();
+
   const [editingSlot, setEditingSlot] = useState<AgentSlot | null>(null);
   const [name, setName] = useState('');
   const [role, setRole] = useState('');
-  const [targetModelCategory, setTargetModelCategory] = useState('Текст и сценарии');
+  const [targetModelCategory, setTargetModelCategory] = useState(
+    'Текст и сценарии'
+  );
   const [notes, setNotes] = useState('');
+
   const [idea, setIdea] = useState('');
   const [generatedStory, setGeneratedStory] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationError, setGenerationError] = useState('');
+  const [generationStage, setGenerationStage] = useState('');
+  const [generationReport, setGenerationReport] =
+    useState<GenerationReport | null>(null);
 
   const handleGenerateStory = async () => {
     if (!idea.trim()) {
@@ -24,106 +223,224 @@ export const AgentManagerView: React.FC = () => {
 
     setIsGenerating(true);
     setGenerationError('');
+    setGenerationStage('Составляю сюжет и план пяти сцен...');
     setGeneratedStory('');
+    setGenerationReport(null);
 
     try {
-      const response = await fetch('http://localhost:11434/api/generate', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: 'qwen2.5:7b',
-          system: `Ты — профессиональный сценарист полнометражных фильмов и AI-анимационных сериалов.
-
-ТВОЯ ГЛАВНАЯ ЗАДАЧА:
-Превращать короткие идеи пользователя в оригинальные, логичные, эмоциональные и кинематографичные истории с полноценным сюжетом.
-
-СТРОГИЕ ПРАВИЛА:
-1. Пиши исключительно на русском языке. Все названия сцен, описания, действия и диалоги должны быть на русском.
-2. Не используй китайский, английский и другие языки. Исключение — имена собственные, если они необходимы сюжету.
-3. Не добавляй постороннюю информацию, рекламу, случайные фразы, переводы, комментарии или технический мусор.
-4. Не показывай рассуждения, планы, анализ, черновики и объяснения. Выводи только готовый сценарий.
-5. Не меняй тему и жанр идеи пользователя.
-6. Не придумывай случайных персонажей, не имеющих отношения к сюжету.
-7. Все события должны быть причинно связаны. Персонажи должны действовать логично и иметь понятные мотивы.
-8. Избегай повторов, пустых диалогов и банальных фраз.
-9. Не торопись раскрывать главную тайну. Постепенно наращивай напряжение и интригу.
-10. Не используй искусственное примирение или счастливый финал, если он не следует из событий.
-11. История должна иметь полноценную развязку и не заканчиваться обещанием продолжения.
-
-СТРУКТУРА СЦЕНАРИЯ:
-
-1. НАЗВАНИЕ — короткое, оригинальное и запоминающееся.
-2. ЖАНР — укажи основной жанр истории.
-3. ПЕРСОНАЖИ — перечисли главных героев, их характеры, цели и отношения.
-4. ЗАВЯЗКА — начни с сильного события, конфликта или загадки, которая заинтересует зрителя.
-5. РАЗВИТИЕ — последовательно раскрывай события, мотивы и отношения персонажей.
-6. ИНТРИГА — добавляй новые обстоятельства, подозрения и препятствия.
-7. НЕОЖИДАННЫЙ ПОВОРОТ — подготовь сюжетный поворот, который удивит зрителя, но будет логически обоснован.
-8. КУЛЬМИНАЦИЯ — покажи самое напряжённое и эмоциональное событие истории.
-9. ФИНАЛ — разреши главный конфликт. Заверши историю сильной эмоциональной сценой.
-
-ТРЕБОВАНИЯ К СЦЕНАМ:
-- Создай от 5 до 8 полноценных сцен.
-- Каждая сцена должна продвигать сюжет.
-- Указывай место, время суток и визуальное действие.
-- Добавляй естественные диалоги с именами персонажей.
-- Показывай эмоции через действия, мимику и поведение.
-- Избегай повторения одной и той же информации.
-
-ФОРМАТ ОТВЕТА:
-Название:
-Жанр:
-Персонажи:
-
-СЦЕНА 1. [Название]
-Место:
-Визуальное описание:
-Действия:
-Диалоги:
-
-Продолжай в таком же формате для остальных сцен.
-
-В конце добавь:
-ФИНАЛ:
-[Законченная эмоциональная развязка.]
-
-Помни: ты создаёшь готовый сценарий для производства AI-видео, а не краткий пересказ идеи.`,
-          prompt: `Создай оригинальный полноценный сценарий на основе следующей идеи.
+      // ЭТАП 1. Планирование истории.
+      const outline = await askQwen(
+        [
+          {
+            role: 'system',
+            content: SCRIPTWRITER_SYSTEM,
+          },
+          {
+            role: 'user',
+            content: `
+На основе идеи пользователя подготовь подробный план одного эпизода мини-сериала.
 
 ИДЕЯ ПОЛЬЗОВАТЕЛЯ:
 ${idea.trim()}
 
-Перед выдачей проверь, что сценарий полностью соответствует идее, написан на русском языке, не содержит посторонних фрагментов, имеет логичный сюжет и законченный финал.
+ТРЕБОВАНИЯ:
+1. Это один эпизод продолжительностью от 2 до 3 минут.
+2. Запланируй ровно 5 сцен.
+3. Сохрани тему, жанр и всех персонажей, указанных пользователем.
+4. Не меняй имена и отношения персонажей.
+5. У каждого главного персонажа должна быть понятная мотивация.
+6. Каждая сцена должна иметь отдельную функцию.
+7. События должны логически вытекать друг из друга.
+8. Подготовь сильный поворот для пятой сцены.
+9. Не раскрывай все тайны сериала.
+10. Не пиши готовые диалоги и художественный сценарий.
+11. План должен быть кратким, конкретным и последовательным.
 
-Выведи только готовый сценарий.`,
-          stream: false,
-          options: {
-            temperature: 0.65,
-            top_p: 0.9,
-            repeat_penalty: 1.15,
-            num_predict: 5000,
+СТРОГИЙ ФОРМАТ:
+
+НАЗВАНИЕ:
+Название сериала и эпизода.
+
+ЖАНР:
+Основной жанр.
+
+ПЕРСОНАЖИ:
+Имя — роль, характер и мотивация.
+
+--- ПЛАН СЦЕН ---
+
+СЦЕНА 1: цель, событие и результат.
+СЦЕНА 2: цель, событие и результат.
+СЦЕНА 3: цель, событие и результат.
+СЦЕНА 4: цель, событие и результат.
+СЦЕНА 5: кульминация и клиффхэнгер.
+
+Выведи только план.
+`,
           },
-        }),
+        ],
+        1100,
+        0.45
+      );
+
+      const planMarker = outline.search(/---\s*ПЛАН\s+СЦЕН\s*---/i);
+
+      const seriesInfo =
+        planMarker >= 0
+          ? outline.slice(0, planMarker).trim()
+          : outline.trim();
+
+      const scenes: string[] = [];
+
+      setGeneratedStory(seriesInfo);
+
+      // ЭТАП 2. Последовательное создание пяти сцен.
+      for (let sceneNumber = 1; sceneNumber <= SCENE_COUNT; sceneNumber++) {
+        setGenerationStage(
+          `Создаю сцену ${sceneNumber} из ${SCENE_COUNT}...`
+        );
+
+        const previousScenes =
+          scenes.length > 0
+            ? scenes.join('\n\n')
+            : 'Предыдущих сцен пока нет.';
+
+        const currentScene = await askQwen(
+          [
+            {
+              role: 'system',
+              content: SCRIPTWRITER_SYSTEM,
+            },
+            {
+              role: 'user',
+              content: `
+Создай только одну сцену короткого мини-сериала.
+
+ИДЕЯ ПОЛЬЗОВАТЕЛЯ:
+${idea.trim()}
+
+ПЛАН ВСЕГО ЭПИЗОДА:
+${outline}
+
+УЖЕ НАПИСАННЫЕ СЦЕНЫ:
+${previousScenes}
+
+ТЕПЕРЬ НАПИШИ:
+${SCENE_PURPOSES[sceneNumber - 1]}
+
+ТРЕБОВАНИЯ К ЭТОЙ СЦЕНЕ:
+1. Напиши только сцену номер ${sceneNumber}.
+2. Ориентир — 56–70 произносимых слов в диалогах.
+3. Используй имена и факты строго как в плане.
+4. Не меняй уже установленные события и отношения.
+5. Не повторяй информацию из предыдущих сцен.
+6. Продвигай историю новым событием или конфликтом.
+7. Добавь естественные диалоги.
+8. Реплики пиши отдельными строками в формате: ИМЯ: текст.
+9. Перед диалогами кратко укажи место, время и действие.
+10. Не описывай камеру, монтаж, ракурсы и технические детали видео.
+11. Не добавляй новых персонажей без необходимости.
+12. Пиши исключительно грамотным русским языком.
+13. Не добавляй другие сцены.
+14. Не объясняй свои действия.
+15. Для пятой сцены обязательно создай сильный клиффхэнгер.
+
+ВЫВЕДИ ТОЛЬКО СЦЕНУ ${sceneNumber}.
+`,
+            },
+          ],
+          900,
+          0.7
+        );
+
+        const normalizedScene = normalizeSceneHeading(
+          currentScene,
+          sceneNumber
+        );
+
+        scenes.push(normalizedScene);
+
+        const currentStory = [
+          seriesInfo,
+          ...scenes,
+        ]
+          .filter(Boolean)
+          .join('\n\n');
+
+        // Показываем результат постепенно.
+        setGeneratedStory(currentStory);
+      }
+
+      // ЭТАП 3. Автоматическая проверка собранного эпизода.
+      setGenerationStage('Проверяю структуру и хронометраж...');
+
+      const finalStory = [seriesInfo, ...scenes]
+        .filter(Boolean)
+        .join('\n\n');
+
+      const sceneTotal = countScenes(finalStory);
+      const spokenWords = countWords(extractDialogueText(finalStory));
+
+      // Оценка: 140 произносимых слов в минуту
+      // плюс небольшие паузы между сценами.
+      const estimatedSeconds =
+        Math.round((spokenWords / 140) * 60) + 8;
+
+      const warnings: string[] = [];
+
+      if (sceneTotal !== SCENE_COUNT) {
+        warnings.push(
+          `Обнаружено сцен: ${sceneTotal}. Требуется ровно ${SCENE_COUNT}.`
+        );
+      }
+
+      if (spokenWords < 280) {
+        warnings.push(
+          `Слишком мало реплик: ${spokenWords} слов. Цель — 280–350 слов.`
+        );
+      }
+
+      if (spokenWords > 350) {
+        warnings.push(
+          `Слишком много реплик: ${spokenWords} слов. Цель — 280–350 слов.`
+        );
+      }
+
+      if (spokenWords === 0) {
+        warnings.push(
+          'Не удалось распознать реплики. Проверь формат диалогов.'
+        );
+      }
+
+      if (/[A-Za-z]{2,}/.test(finalStory)) {
+        warnings.push(
+          'Обнаружены английские фрагменты. Требуется проверка русского языка.'
+        );
+      }
+
+      const repeatedLines = countRepeatedLines(finalStory);
+
+      if (repeatedLines > 0) {
+        warnings.push(
+          `Найдены повторяющиеся строки: ${repeatedLines}.`
+        );
+      }
+
+      if (estimatedSeconds < 120 || estimatedSeconds > 180) {
+        warnings.push(
+          'Расчётная продолжительность выходит за пределы 2–3 минут.'
+        );
+      }
+
+      setGenerationReport({
+        sceneCount: sceneTotal,
+        spokenWords,
+        estimatedSeconds,
+        warnings,
       });
 
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || 'Ошибка Ollama');
-      }
-
-      const story = (data.response || '')
-        .replace(/<think>[\s\S]*?<\/think>/gi, '')
-        .replace(/\\([*_#])/g, '$1')
-        .trim();
-
-      if (!story) {
-        throw new Error('Qwen не вернула текст истории.');
-      }
-
-      setGeneratedStory(story);
+      setGeneratedStory(finalStory);
+      setGenerationStage('Генерация и проверка завершены.');
     } catch (error) {
       setGenerationError(
         error instanceof Error
@@ -135,7 +452,9 @@ ${idea.trim()}
     }
   };
 
-  const reservedCount = workspace.agentSlots.filter((s) => s.status === 'reserved').length;
+  const reservedCount = workspace.agentSlots.filter(
+    (s) => s.status === 'reserved'
+  ).length;
 
   const openSlotEditor = (slot: AgentSlot) => {
     setEditingSlot(slot);
@@ -151,14 +470,19 @@ ${idea.trim()}
 
   const handleSaveSlot = (e: React.FormEvent) => {
     e.preventDefault();
+
     if (!editingSlot) return;
+
     updateAgentSlot(editingSlot.slotNumber, {
       status: 'reserved',
-      name: name.trim() || `Агент #${String(editingSlot.slotNumber).padStart(2, '0')}`,
+      name:
+        name.trim() ||
+        `Агент #${String(editingSlot.slotNumber).padStart(2, '0')}`,
       role: role.trim() || 'Черновик роли (ИИ не подключён)',
       targetModelCategory,
       notes: notes.trim(),
     });
+
     setEditingSlot(null);
   };
 
@@ -168,19 +492,24 @@ ${idea.trim()}
       <div className="rounded-xl border border-[#7C3AED]/40 bg-[#0B1120] p-5 space-y-4">
         <div>
           <h2 className="text-lg font-semibold text-white">
-            AI Scriptwriter — Qwen 2.5
+            AI Scriptwriter — Qwen 3.5 4B
           </h2>
           <p className="mt-1 text-xs text-slate-400">
-            Первый рабочий ИИ-агент нашей платформы.
+            Локальная генерация мини-сериалов: планирование, пять сцен и
+            автоматическая проверка.
+          </p>
+          <p className="mt-2 text-xs text-violet-300">
+            Формат эпизода: 2–3 минуты · 5 сцен · 280–350 произносимых слов.
           </p>
         </div>
 
         <textarea
           value={idea}
           onChange={(e) => setIdea(e.target.value)}
-          placeholder="Опиши идею своей истории..."
+          placeholder="Опиши идею мини-сериала: герои, конфликт, тайна, предательство или другой сюжет..."
           rows={4}
-          className="w-full rounded-lg border border-[#1E293B] bg-[#060913] px-3 py-3 text-sm text-white placeholder-slate-500 focus:border-[#8B5CF6] focus:outline-none"
+          disabled={isGenerating}
+          className="w-full rounded-lg border border-[#1E293B] bg-[#060913] px-3 py-3 text-sm text-white placeholder-slate-500 focus:border-[#8B5CF6] focus:outline-none disabled:opacity-60"
         />
 
         <button
@@ -189,19 +518,95 @@ ${idea.trim()}
           disabled={isGenerating}
           className="rounded-lg bg-[#7C3AED] px-5 py-2.5 text-sm font-semibold text-white hover:bg-[#6D28D9] disabled:opacity-50"
         >
-          {isGenerating ? 'Qwen создаёт сценарий...' : 'Создать сценарий'}
+          {isGenerating
+            ? 'Qwen создаёт эпизод...'
+            : 'Создать эпизод 2–3 минуты'}
         </button>
 
+        {generationStage && (
+          <p className="text-xs text-violet-300">
+            {generationStage}
+          </p>
+        )}
+
         {generationError && (
-          <p className="text-sm text-rose-400">{generationError}</p>
+          <p className="text-sm text-rose-400">
+            {generationError}
+          </p>
         )}
 
         {generatedStory && (
           <div className="rounded-lg border border-[#1E293B] bg-[#060913] p-4">
-            <h3 className="mb-3 font-semibold text-white">Готовый сценарий</h3>
+            <h3 className="mb-3 font-semibold text-white">
+              Готовый сценарий
+            </h3>
+
             <div className="whitespace-pre-wrap text-sm leading-7 text-slate-300">
               {generatedStory}
             </div>
+          </div>
+        )}
+
+        {generationReport && (
+          <div className="rounded-lg border border-[#1E293B] bg-[#060913] p-4 space-y-3">
+            <h3 className="font-semibold text-white">
+              Автоматическая проверка эпизода
+            </h3>
+
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <div>
+                <p className="text-xs text-slate-500">Количество сцен</p>
+                <p className="text-lg font-semibold text-white">
+                  {generationReport.sceneCount} / 5
+                </p>
+              </div>
+
+              <div>
+                <p className="text-xs text-slate-500">
+                  Произносимые слова
+                </p>
+                <p className="text-lg font-semibold text-white">
+                  {generationReport.spokenWords}
+                </p>
+              </div>
+
+              <div>
+                <p className="text-xs text-slate-500">
+                  Оценка длительности
+                </p>
+                <p className="text-lg font-semibold text-white">
+                  {formatDuration(generationReport.estimatedSeconds)}
+                </p>
+              </div>
+            </div>
+
+            <p className="text-[11px] leading-5 text-slate-500">
+              Расчёт сделан по распознанным репликам при скорости 140 слов
+              в минуту и небольших паузах между сценами. Фактическую
+              длительность нужно будет проверить после озвучки.
+            </p>
+
+            {generationReport.warnings.length > 0 ? (
+              <div className="border-t border-[#1E293B] pt-3 space-y-2">
+                <p className="text-xs font-semibold text-amber-300">
+                  Нужно проверить:
+                </p>
+
+                {generationReport.warnings.map((warning, index) => (
+                  <p
+                    key={index}
+                    className="text-xs text-amber-200"
+                  >
+                    • {warning}
+                  </p>
+                ))}
+              </div>
+            ) : (
+              <p className="border-t border-[#1E293B] pt-3 text-xs text-emerald-400">
+                Структура, объём реплик и предварительный хронометраж
+                соответствуют заданным ограничениям.
+              </p>
+            )}
           </div>
         )}
       </div>
@@ -212,12 +617,19 @@ ${idea.trim()}
             Реестр слотов агентов (10 слотов)
           </h2>
           <p className="mt-1 text-xs text-slate-400 max-w-2xl">
-            На текущем этапе фундамента ИИ-агенты не создаются и не запускаются. Здесь подготовлены 10 изолированных слотов для планирования будущей архитектуры автоматизации.
+            На текущем этапе фундамента ИИ-агенты не создаются и не
+            запускаются. Здесь подготовлены 10 изолированных слотов для
+            планирования будущей архитектуры автоматизации.
           </p>
         </div>
+
         <div className="text-right font-mono-tabular">
-          <div className="text-xs text-slate-400">Занято черновиками</div>
-          <div className="text-xl font-bold text-white">{reservedCount} / 10</div>
+          <div className="text-xs text-slate-400">
+            Занято черновиками
+          </div>
+          <div className="text-xl font-bold text-white">
+            {reservedCount} / 10
+          </div>
         </div>
       </div>
 
@@ -241,6 +653,7 @@ ${idea.trim()}
                   <span className="font-mono-tabular text-xs font-semibold text-slate-400">
                     Слот {slotIndex}
                   </span>
+
                   <span
                     className={`text-xs font-medium ${
                       isEmpty ? 'text-slate-500' : 'text-[#A78BFA]'
@@ -255,9 +668,11 @@ ${idea.trim()}
                     <div className="flex h-10 w-10 items-center justify-center rounded-lg border border-[#1E293B] bg-[#060913] text-slate-500">
                       <Bot className="h-5 w-5" />
                     </div>
+
                     <div className="mt-3 text-xs font-medium text-slate-400">
                       Свободный слот
                     </div>
+
                     <div className="mt-1 text-[11px] text-slate-500">
                       Готов к резервированию роли
                     </div>
@@ -267,10 +682,15 @@ ${idea.trim()}
                     <div className="text-sm font-semibold text-white truncate">
                       {slot.name}
                     </div>
-                    <div className="text-xs text-slate-300 line-clamp-2">{slot.role}</div>
+
+                    <div className="text-xs text-slate-300 line-clamp-2">
+                      {slot.role}
+                    </div>
+
                     <div className="pt-1 text-[11px] text-slate-500">
                       Модуль: {slot.targetModelCategory}
                     </div>
+
                     {slot.notes && (
                       <p className="line-clamp-2 text-[11px] text-slate-400">
                         {slot.notes}
@@ -289,6 +709,7 @@ ${idea.trim()}
                   <Edit3 className="h-3.5 w-3.5" />
                   <span>{isEmpty ? 'Резервировать' : 'Изменить'}</span>
                 </button>
+
                 {!isEmpty && (
                   <button
                     type="button"
@@ -316,8 +737,10 @@ ${idea.trim()}
           <div className="w-full max-w-md rounded-xl border border-[#1E293B] bg-[#0B1120] p-6">
             <div className="flex items-center justify-between border-b border-[#1E293B] pb-3">
               <h3 className="text-base font-semibold text-white">
-                Настройка черновика — Слот {String(editingSlot.slotNumber).padStart(2, '0')}
+                Настройка черновика — Слот{' '}
+                {String(editingSlot.slotNumber).padStart(2, '0')}
               </h3>
+
               <button
                 type="button"
                 onClick={() => setEditingSlot(null)}
@@ -329,13 +752,15 @@ ${idea.trim()}
 
             <form onSubmit={handleSaveSlot} className="mt-4 space-y-4">
               <p className="text-xs text-slate-400">
-                Это только резервная спецификация. Автоматическое выполнение и ИИ-вызовы не выполняются.
+                Это только резервная спецификация. Автоматическое
+                выполнение и ИИ-вызовы не выполняются.
               </p>
 
               <div>
                 <label className="block text-xs font-medium text-slate-300 mb-1">
                   Название роли (планируемое)
                 </label>
+
                 <input
                   type="text"
                   value={name}
@@ -349,6 +774,7 @@ ${idea.trim()}
                 <label className="block text-xs font-medium text-slate-300 mb-1">
                   Зона ответственности
                 </label>
+
                 <input
                   type="text"
                   value={role}
@@ -362,12 +788,17 @@ ${idea.trim()}
                 <label className="block text-xs font-medium text-slate-300 mb-1">
                   Целевой тип подключения API
                 </label>
+
                 <select
                   value={targetModelCategory}
-                  onChange={(e) => setTargetModelCategory(e.target.value)}
+                  onChange={(e) =>
+                    setTargetModelCategory(e.target.value)
+                  }
                   className="w-full rounded-lg border border-[#1E293B] bg-[#060913] px-3 py-2 text-sm text-white focus:border-[#8B5CF6] focus:outline-none"
                 >
-                  <option value="Текст и сценарии">Текст и сценарии</option>
+                  <option value="Текст и сценарии">
+                    Текст и сценарии
+                  </option>
                   <option value="Изображения">Изображения</option>
                   <option value="Видео-генерация">Видео-генерация</option>
                   <option value="Аудио и голос">Аудио и голос</option>
@@ -378,6 +809,7 @@ ${idea.trim()}
                 <label className="block text-xs font-medium text-slate-300 mb-1">
                   Технические заметки
                 </label>
+
                 <textarea
                   rows={3}
                   value={notes}
@@ -395,6 +827,7 @@ ${idea.trim()}
                 >
                   Отмена
                 </button>
+
                 <button
                   type="submit"
                   className="rounded-lg bg-[#7C3AED] px-4 py-2 text-xs font-semibold text-white hover:bg-[#6D28D9]"
