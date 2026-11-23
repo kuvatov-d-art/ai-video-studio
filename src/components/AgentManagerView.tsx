@@ -1,6 +1,6 @@
 
 import React, { useState } from 'react';
-import { Bot, Edit3, RotateCcw, X } from 'lucide-react';
+import { Bot, Edit3, RotateCcw, X, CheckCircle2, Search } from 'lucide-react';
 import { useStudioStore } from '../store/useStudioStore';
 import { AgentSlot } from '../types/studio';
 
@@ -215,6 +215,11 @@ export const AgentManagerView: React.FC = () => {
   const [generationReport, setGenerationReport] =
     useState<GenerationReport | null>(null);
 
+  // AI Story Quality Control
+  const [qualityReview, setQualityReview] = useState('');
+  const [isQualityChecking, setIsQualityChecking] = useState(false);
+  const [qualityCheckError, setQualityCheckError] = useState('');
+
   const handleGenerateStory = async () => {
     if (!idea.trim()) {
       setGenerationError('Сначала напишите идею истории.');
@@ -226,6 +231,8 @@ export const AgentManagerView: React.FC = () => {
     setGenerationStage('Составляю сюжет и план пяти сцен...');
     setGeneratedStory('');
     setGenerationReport(null);
+    setQualityReview('');
+    setQualityCheckError('');
 
     try {
       // ЭТАП 1. Планирование истории.
@@ -367,11 +374,10 @@ ${SCENE_PURPOSES[sceneNumber - 1]}
           .filter(Boolean)
           .join('\n\n');
 
-        // Показываем результат постепенно.
         setGeneratedStory(currentStory);
       }
 
-      // ЭТАП 3. Автоматическая проверка собранного эпизода.
+      // ЭТАП 3. Автоматическая техническая проверка.
       setGenerationStage('Проверяю структуру и хронометраж...');
 
       const finalStory = [seriesInfo, ...scenes]
@@ -381,8 +387,6 @@ ${SCENE_PURPOSES[sceneNumber - 1]}
       const sceneTotal = countScenes(finalStory);
       const spokenWords = countWords(extractDialogueText(finalStory));
 
-      // Оценка: 140 произносимых слов в минуту
-      // плюс небольшие паузы между сценами.
       const estimatedSeconds =
         Math.round((spokenWords / 140) * 60) + 8;
 
@@ -452,6 +456,135 @@ ${SCENE_PURPOSES[sceneNumber - 1]}
     }
   };
 
+  // ЭТАП 4. Семантическая проверка сценария отдельным запросом.
+  const handleQualityCheck = async () => {
+    if (!generatedStory.trim()) {
+      setQualityCheckError('Сначала создай сценарий.');
+      return;
+    }
+
+    setIsQualityChecking(true);
+    setQualityCheckError('');
+    setQualityReview('');
+
+    try {
+      const review = await askQwen(
+        [
+          {
+            role: 'system',
+            content: `
+Ты профессиональный редактор киносценариев и специалист по проверке драматургии.
+
+Твоя задача — проверять готовые сценарии, а не переписывать их.
+Пиши только на грамотном русском языке.
+Будь строгим и объективным.
+Не хвали сценарий без оснований.
+Не придумывай события, которых нет в тексте.
+Отличай подтверждённые ошибки от неясных моментов.
+При обнаружении проблемы указывай конкретную сцену и объясняй, в чём проблема.
+Не показывай внутренние рассуждения.
+Не переписывай сценарий.
+`,
+          },
+          {
+            role: 'user',
+            content: `
+Проведи профессиональную проверку этого эпизода.
+
+ИСХОДНАЯ ИДЕЯ ПОЛЬЗОВАТЕЛЯ:
+${idea.trim()}
+
+ГОТОВЫЙ СЦЕНАРИЙ:
+${generatedStory}
+
+ПРОВЕРЬ СЛЕДУЮЩИЕ КРИТЕРИИ:
+
+1. СООТВЕТСТВИЕ ИДЕЕ:
+Не ушёл ли сюжет от исходной идеи пользователя?
+Не изменены ли важные события и отношения персонажей?
+
+2. ЛОГИКА СОБЫТИЙ:
+Вытекает ли каждая сцена из предыдущей?
+Нет ли внезапных, необъяснимых поступков?
+Нет ли событий, которые противоречат друг другу?
+
+3. ПЕРСОНАЖИ:
+Сохраняются ли имена, возраст, роли и отношения?
+Понятны ли мотивы Александра, Марии и Ивана?
+Не меняются ли характеры без причины?
+
+4. ДИАЛОГИ:
+Звучат ли реплики естественно?
+Соответствуют ли они ситуации и характерам?
+Нет ли пустых, неуместных или повторяющихся реплик?
+
+5. ПОВТОРЫ:
+Есть ли повторяющиеся события, фразы или описания?
+
+6. РУССКИЙ ЯЗЫК:
+Есть ли грамматические ошибки, бессмысленные предложения или иностранные слова?
+
+7. ДРАМАТУРГИЯ:
+Есть ли интрига в начале?
+Усиливается ли конфликт?
+Есть ли развитие в каждой сцене?
+Есть ли сильный поворот в конце?
+
+ФОРМАТ ОТЧЁТА:
+
+ОБЩАЯ ОЦЕНКА: от 1 до 10.
+
+СТАТУС:
+ГОТОВ К ДАЛЬНЕЙШЕЙ РАБОТЕ / НУЖНА ДОРАБОТКА / НЕ ГОТОВ.
+
+СИЛЬНЫЕ СТОРОНЫ:
+Укажи только реальные достоинства.
+
+КРИТИЧЕСКИЕ ОШИБКИ:
+Перечисли конкретные ошибки с указанием номера сцены.
+
+ПРОВЕРКА ПЕРСОНАЖЕЙ:
+Кратко оцени последовательность поведения каждого героя.
+
+ПРОВЕРКА СЦЕН:
+Отдельно оцени сцены 1, 2, 3, 4 и 5.
+
+ПОВТОРЫ И ЯЗЫК:
+Укажи конкретные проблемы или напиши, что явных проблем не обнаружено.
+
+КОНЦОВКА:
+Оцени силу интриги и желание зрителя посмотреть следующую серию.
+
+ЧТО ИСПРАВИТЬ:
+Дай не более пяти конкретных рекомендаций.
+
+ВАЖНО:
+- Не переписывай сценарий.
+- Не добавляй придуманные факты.
+- Не подменяй исходную идею.
+- Не выдавай предположение за доказанную ошибку.
+- Если текст не содержит достаточной информации, прямо укажи это.
+
+Выведи только редакторский отчёт.
+`,
+          },
+        ],
+        1900,
+        0.25
+      );
+
+      setQualityReview(review);
+    } catch (error) {
+      setQualityCheckError(
+        error instanceof Error
+          ? error.message
+          : 'Не удалось проверить качество сценария.'
+      );
+    } finally {
+      setIsQualityChecking(false);
+    }
+  };
+
   const reservedCount = workspace.agentSlots.filter(
     (s) => s.status === 'reserved'
   ).length;
@@ -460,11 +593,13 @@ ${SCENE_PURPOSES[sceneNumber - 1]}
     setEditingSlot(slot);
     setName(slot.name);
     setRole(slot.role);
+
     setTargetModelCategory(
       slot.targetModelCategory === 'Не выбрано'
         ? 'Текст и сценарии'
         : slot.targetModelCategory
     );
+
     setNotes(slot.notes);
   };
 
@@ -494,10 +629,12 @@ ${SCENE_PURPOSES[sceneNumber - 1]}
           <h2 className="text-lg font-semibold text-white">
             AI Scriptwriter — Qwen 3.5 4B
           </h2>
+
           <p className="mt-1 text-xs text-slate-400">
             Локальная генерация мини-сериалов: планирование, пять сцен и
             автоматическая проверка.
           </p>
+
           <p className="mt-2 text-xs text-violet-300">
             Формат эпизода: 2–3 минуты · 5 сцен · 280–350 произносимых слов.
           </p>
@@ -515,7 +652,7 @@ ${SCENE_PURPOSES[sceneNumber - 1]}
         <button
           type="button"
           onClick={handleGenerateStory}
-          disabled={isGenerating}
+          disabled={isGenerating || isQualityChecking}
           className="rounded-lg bg-[#7C3AED] px-5 py-2.5 text-sm font-semibold text-white hover:bg-[#6D28D9] disabled:opacity-50"
         >
           {isGenerating
@@ -536,86 +673,138 @@ ${SCENE_PURPOSES[sceneNumber - 1]}
         )}
 
         {generatedStory && (
-          <div className="rounded-lg border border-[#1E293B] bg-[#060913] p-4">
-            <h3 className="mb-3 font-semibold text-white">
-              Готовый сценарий
-            </h3>
+          <div className="rounded-lg border border-[#1E293B] bg-[#060913] p-4 space-y-4">
+            <div>
+              <h3 className="mb-3 font-semibold text-white">
+                Готовый сценарий
+              </h3>
 
-            <div className="whitespace-pre-wrap text-sm leading-7 text-slate-300">
-              {generatedStory}
-            </div>
-          </div>
-        )}
-
-        {generationReport && (
-          <div className="rounded-lg border border-[#1E293B] bg-[#060913] p-4 space-y-3">
-            <h3 className="font-semibold text-white">
-              Автоматическая проверка эпизода
-            </h3>
-
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-              <div>
-                <p className="text-xs text-slate-500">Количество сцен</p>
-                <p className="text-lg font-semibold text-white">
-                  {generationReport.sceneCount} / 5
-                </p>
-              </div>
-
-              <div>
-                <p className="text-xs text-slate-500">
-                  Произносимые слова
-                </p>
-                <p className="text-lg font-semibold text-white">
-                  {generationReport.spokenWords}
-                </p>
-              </div>
-
-              <div>
-                <p className="text-xs text-slate-500">
-                  Оценка длительности
-                </p>
-                <p className="text-lg font-semibold text-white">
-                  {formatDuration(generationReport.estimatedSeconds)}
-                </p>
+              <div className="whitespace-pre-wrap text-sm leading-7 text-slate-300">
+                {generatedStory}
               </div>
             </div>
 
-            <p className="text-[11px] leading-5 text-slate-500">
-              Расчёт сделан по распознанным репликам при скорости 140 слов
-              в минуту и небольших паузах между сценами. Фактическую
-              длительность нужно будет проверить после озвучки.
-            </p>
+            <div className="border-t border-[#1E293B] pt-4 space-y-3">
+              <button
+                type="button"
+                onClick={handleQualityCheck}
+                disabled={isGenerating || isQualityChecking}
+                className="inline-flex items-center gap-2 rounded-lg border border-[#7C3AED]/50 bg-[#18112B] px-4 py-2.5 text-sm font-semibold text-violet-200 hover:bg-[#261A42] disabled:opacity-50"
+              >
+                {isQualityChecking ? (
+                  <Search className="h-4 w-4 animate-pulse" />
+                ) : (
+                  <CheckCircle2 className="h-4 w-4" />
+                )}
 
-            {generationReport.warnings.length > 0 ? (
-              <div className="border-t border-[#1E293B] pt-3 space-y-2">
-                <p className="text-xs font-semibold text-amber-300">
-                  Нужно проверить:
+                {isQualityChecking
+                  ? 'Qwen проверяет сценарий...'
+                  : 'Проверить качество сценария'}
+              </button>
+
+              {isQualityChecking && (
+                <p className="text-xs text-violet-300">
+                  Проверяю логику событий, персонажей, диалоги,
+                  повторы и концовку...
                 </p>
+              )}
 
-                {generationReport.warnings.map((warning, index) => (
-                  <p
-                    key={index}
-                    className="text-xs text-amber-200"
-                  >
-                    • {warning}
+              {qualityCheckError && (
+                <p className="text-sm text-rose-400">
+                  {qualityCheckError}
+                </p>
+              )}
+
+              {qualityReview && (
+                <div className="rounded-lg border border-[#7C3AED]/30 bg-[#0B1120] p-4">
+                  <h3 className="mb-3 font-semibold text-white">
+                    Отчёт AI Story Quality Control
+                  </h3>
+
+                  <div className="whitespace-pre-wrap text-sm leading-7 text-slate-300">
+                    {qualityReview}
+                  </div>
+
+                  <p className="mt-4 border-t border-[#1E293B] pt-3 text-[11px] text-slate-500">
+                    Это оценка нейросети. Она помогает найти проблемы,
+                    но не гарантирует отсутствие всех ошибок.
                   </p>
-                ))}
-              </div>
-            ) : (
-              <p className="border-t border-[#1E293B] pt-3 text-xs text-emerald-400">
-                Структура, объём реплик и предварительный хронометраж
-                соответствуют заданным ограничениям.
-              </p>
-            )}
+                </div>
+              )}
+            </div>
           </div>
         )}
       </div>
+
+      {generationReport && (
+        <div className="rounded-xl border border-[#1E293B] bg-[#0B1120] p-5 space-y-3">
+          <h3 className="font-semibold text-white">
+            Автоматическая проверка эпизода
+          </h3>
+
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <div>
+              <p className="text-xs text-slate-500">Количество сцен</p>
+              <p className="text-lg font-semibold text-white">
+                {generationReport.sceneCount} / 5
+              </p>
+            </div>
+
+            <div>
+              <p className="text-xs text-slate-500">
+                Произносимые слова
+              </p>
+              <p className="text-lg font-semibold text-white">
+                {generationReport.spokenWords}
+              </p>
+            </div>
+
+            <div>
+              <p className="text-xs text-slate-500">
+                Оценка длительности
+              </p>
+              <p className="text-lg font-semibold text-white">
+                {formatDuration(generationReport.estimatedSeconds)}
+              </p>
+            </div>
+          </div>
+
+          <p className="text-[11px] leading-5 text-slate-500">
+            Расчёт сделан по распознанным репликам при скорости 140 слов
+            в минуту и небольших паузах между сценами. Фактическую
+            длительность нужно будет проверить после озвучки.
+          </p>
+
+          {generationReport.warnings.length > 0 ? (
+            <div className="border-t border-[#1E293B] pt-3 space-y-2">
+              <p className="text-xs font-semibold text-amber-300">
+                Нужно проверить:
+              </p>
+
+              {generationReport.warnings.map((warning, index) => (
+                <p
+                  key={index}
+                  className="text-xs text-amber-200"
+                >
+                  • {warning}
+                </p>
+              ))}
+            </div>
+          ) : (
+            <p className="border-t border-[#1E293B] pt-3 text-xs text-emerald-400">
+              Структура, объём реплик и предварительный хронометраж
+              соответствуют заданным ограничениям.
+            </p>
+          )}
+        </div>
+      )}
 
       <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-[#1E293B] bg-[#0B1120] p-5">
         <div>
           <h2 className="text-base font-semibold text-white">
             Реестр слотов агентов (10 слотов)
           </h2>
+
           <p className="mt-1 text-xs text-slate-400 max-w-2xl">
             На текущем этапе фундамента ИИ-агенты не создаются и не
             запускаются. Здесь подготовлены 10 изолированных слотов для
